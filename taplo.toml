@@ -1,0 +1,7 @@
+exclude = ["target/**", ".rust-analyzer/**"]
+
+[formatting]
+align_entries       = true
+array_auto_collapse = true
+column_width        = 120
+reorder_keys        = true

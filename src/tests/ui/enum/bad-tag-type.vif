@@ -1,0 +1,18 @@
+const Fruit = enum(*u8) {
+    apple,
+    orange,
+    pineapple,
+};
+
+fn main() void {
+    const a: Fruit = .apple;
+}
+
+//@ args: build
+//@ stderr:
+// error: a enum tag can only be an integer, found `*u8`
+//   --> src/tests/ui/enum/bad-tag-type.vif:1:20
+//   |
+// 1 | const Fruit = enum(*u8) {
+//   |                    ^^^
+//

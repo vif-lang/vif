@@ -1,0 +1,10 @@
+const CallingConvention = @import("builtin").CallingConvention;
+const conv = CallingConvention.c;
+
+fn foo() #callconv(conv) void {}
+
+fn main() void {
+    foo();
+}
+
+//@ args: build

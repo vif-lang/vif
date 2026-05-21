@@ -1,0 +1,29 @@
+extern "builtin" #inline fn @slice_from_raw_parts($T, ptr: *const $T, len: usize) []$T;
+extern "builtin" #inline fn @slice_ptr($T, slice: []const $T) *const $T;
+extern "builtin" #inline fn @slice_len($T, slice: []const $T) usize;
+extern "builtin" #inline fn @slice_copy_nonoverlapping($T, src: []const $T, dst: []const $T) void;
+
+#inline fn from_raw_parts($T, ptr: *const $T, len: usize) []$T {
+    @slice_from_raw_parts(ptr, len)
+}
+
+#inline fn ptr($T, slice: []const $T) *const $T {
+    @slice_ptr(slice)
+}
+
+#inline fn len($T, slice: []const $T) usize {
+    @slice_len(slice)
+}
+
+#inline fn cast($src_ty, $dst_ty, slice: []$src_ty) []$dst_ty {
+    // TODO(zino): safety checks
+    const ptr: *const $dst_ty = @bitcast(ptr(slice));
+
+    const src_len_in_bytes = len(slice) * @size_of($src_ty);
+    const new_len = src_len_in_bytes / @size_of($dst_ty);
+    from_raw_parts(ptr, new_len)
+}
+
+#inline fn copy_nonoverlapping($T, src: []const $T, dst: []const $T) void {
+    @slice_copy_nonoverlapping(src, dst)
+}

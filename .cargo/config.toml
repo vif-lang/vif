@@ -1,0 +1,27 @@
+[unstable]
+checksum-freshness         = true
+no-embed-metadata          = true
+profile-hint-mostly-unused = true
+trim-paths                 = true
+
+[profile.dev]
+codegen-units = 256
+debug         = "limited"
+incremental   = true
+lto           = "off"
+opt-level     = 0
+
+[profile.dev.package."*"]
+debug            = false
+debug-assertions = true
+opt-level        = 1
+
+[profile.test]
+codegen-units = 256
+debug         = "limited"
+
+[build]
+rustflags = ["-Zshare-generics=y", "-Zthreads=16"]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

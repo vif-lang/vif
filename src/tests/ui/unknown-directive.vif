@@ -1,0 +1,33 @@
+#inlien fn main() void {
+    #callcnv foo();
+    const ok = 1;
+    const Item = #linears union(enum) {
+        apple,
+    };
+    const still_ok = ok;
+}
+
+//@ args: build
+//@ stderr:
+// error: unknown directive `#inlien`
+//   --> src/tests/ui/unknown-directive.vif:1:1
+//   |
+// 1 | #inlien fn main() void {
+//   | ^^^^^^^
+//   |
+//   = note: known directives are `#inline`, `#noinline`, `#callconv`, `#linear`, `#packed`, `#volatile`, and `#addrspace`
+// error: unknown directive `#callcnv`
+//   --> src/tests/ui/unknown-directive.vif:2:5
+//   |
+// 2 |     #callcnv foo();
+//   |     ^^^^^^^^
+//   |
+//   = note: known directives are `#inline`, `#noinline`, `#callconv`, `#linear`, `#packed`, `#volatile`, and `#addrspace`
+// error: unknown directive `#linears`
+//   --> src/tests/ui/unknown-directive.vif:4:18
+//   |
+// 4 |     const Item = #linears union(enum) {
+//   |                  ^^^^^^^^
+//   |
+//   = note: known directives are `#inline`, `#noinline`, `#callconv`, `#linear`, `#packed`, `#volatile`, and `#addrspace`
+//

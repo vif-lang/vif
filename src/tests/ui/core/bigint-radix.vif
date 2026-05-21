@@ -1,0 +1,14 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+fn main() void {
+    comptime const a = 0x100000000000000000000000000000000;
+    comptime const b = 0b10000000000000000000000000000000000000000000000000000000000000000;
+    comptime const c: u8 = (a >> 128) + (b >> 64);
+    var x: u8 = c;
+    printf(std.slice.ptr("%u\n"), x);
+}
+
+//@ args: run
+//@ stdout:
+// 2

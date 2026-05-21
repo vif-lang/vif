@@ -1,0 +1,21 @@
+const Fruit = enum {
+    apple,
+    orange,
+    pineapple,
+    apple,
+};
+
+fn main() void {
+    const a: Fruit = .apple;
+}
+
+//@ args: build
+//@ stderr:
+// error: enum variant `apple` already defined
+//   --> src/tests/ui/enum/variant-redefinition.vif:5:5
+//   |
+// 2 |     apple,
+//   |     ------ first defined here
+// 5 |     apple,
+//   |     ^^^^^ redefinition here
+//

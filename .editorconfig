@@ -1,0 +1,27 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+trim_trailing_whitespace = true
+end_of_line = lf
+insert_final_newline = true
+indent_style = tab
+indent_size = 4
+
+[*.md]
+indent_style = space
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.toml]
+indent_style = space
+indent_size = 2
+
+[.git{attributes,ignore,keep}]
+insert_final_newline = false
+
+[COMMIT_EDITMSG]
+max_line_length = unset

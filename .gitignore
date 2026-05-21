@@ -1,0 +1,11 @@
+.vs
+.idea
+.zed
+.DS_Store
+/target
+/target-vifc
+*.pdb
+rustc-ice-*.txt
+*.mm_profdata
+*.svg
+*.exe

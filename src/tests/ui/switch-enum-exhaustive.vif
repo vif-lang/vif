@@ -1,0 +1,16 @@
+const Color = enum {
+    Red,
+    Green,
+    Blue,
+};
+
+fn main() void {
+    var c: Color = Color.Green;
+    switch c {
+        Color.Red => { var a: i32 = 1; }
+        Color.Green => { var a: i32 = 2; }
+        Color.Blue => { var a: i32 = 3; }
+    }
+}
+
+//@ args: build

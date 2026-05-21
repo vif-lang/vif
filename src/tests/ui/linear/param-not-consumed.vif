@@ -1,0 +1,18 @@
+const Handle = #linear struct { fd: i32 };
+fn use_handle(h: Handle) void {
+}
+fn main() void {
+    const h: Handle = Handle { .fd = 3 };
+    use_handle(h);
+}
+
+//@ args: build
+//@ stderr:
+// error: linear value `h` must be consumed before going out of scope
+//   --> src/tests/ui/linear/param-not-consumed.vif:2:18
+//   |
+// 2 | fn use_handle(h: Handle) void {
+//   |                  ^^^^^^ `h` has type `Handle` which is linear
+//   |
+//   = note: linear values cannot be implicitly dropped; pass to a consuming function or use @forget
+//

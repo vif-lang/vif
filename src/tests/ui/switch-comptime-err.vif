@@ -1,0 +1,18 @@
+fn main() void {
+    var x: i32 = 1i32;
+    switch x {
+        0 => {
+            var a: i32 = false;
+        }
+        else => { var a: i32 = 20; }
+    }
+}
+
+//@ args: build
+//@ stderr:
+// error: expected type `i32`, found `bool`
+//   --> src/tests/ui/switch-comptime-err.vif:5:17
+//   |
+// 5 |             var a: i32 = false;
+//   |                 ^^^^^^^^^^^^^^
+//

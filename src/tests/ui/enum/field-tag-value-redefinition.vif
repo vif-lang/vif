@@ -1,0 +1,20 @@
+const Fruit = enum(u8) {
+    apple,
+    orange,
+    pineapple = 0,
+};
+
+fn main() void {
+    const a: Fruit = .apple;
+}
+
+//@ args: build
+//@ stderr:
+// error: enum value already taken
+//   --> src/tests/ui/enum/field-tag-value-redefinition.vif:4:5
+//   |
+// 2 |     apple,
+//   |     ------ first definition here
+// 4 |     pineapple = 0,
+//   |     ^^^^^^^^^^^^^^ redefinition here
+//

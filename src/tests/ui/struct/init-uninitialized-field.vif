@@ -1,0 +1,25 @@
+fn main() void {
+    const Fruit = struct {
+        size: i32,
+        weight: i32,
+    };
+
+    const apple: Fruit = .{
+        .size = 1,
+    };
+}
+
+//@ args: build
+//@ stderr:
+//error: field `weight` was not initialized
+//   --> src/tests/ui/struct/init-uninitialized-field.vif:7:26
+//   |
+// 7 |     const apple: Fruit = .{
+//   |                          ^^
+// 8 |         .size = 1,
+//   | ^^^^^^^^^^^^^^^^^^
+// 9 |     };
+//   | ^^^^^
+//   |
+//   = note: add `.weight = ...,`
+//

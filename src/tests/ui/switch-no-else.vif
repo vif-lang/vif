@@ -1,0 +1,22 @@
+fn main() void {
+    var x: i32 = 5i32;
+    switch x {
+        0 => { var a: i32 = 10; }
+        1 => { var a: i32 = 20; }
+    }
+}
+
+//@ args: build
+//@ stderr:
+// error: switch must have an else branch
+//   --> src/tests/ui/switch-no-else.vif:3:5
+//   |
+// 3 |     switch x {
+//   |     ^^^^^^^^^^
+// 4 |         0 => { var a: i32 = 10; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 5 |         1 => { var a: i32 = 20; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 6 |     }
+//   | ^^^^^
+//

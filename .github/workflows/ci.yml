@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.rs"
+      - "**/*.vif"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - ".cargo/**"
+      - ".github/**"
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/*.vif"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - ".cargo/**"
+      - ".github/**"
+  schedule:
+    - cron: "0 2 * * *" # 02:00 UTC daily
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CLICOLOR: 1
+  FORCE_COLOR: 1
+  CLICOLOR_FORCE: 1
+  # clang+llvm-*-x86_64-pc-windows-msvc.tar.xz is the full developer tarball
+  # from the LLVM project that includes llvm-config.exe, required by llvm-sys.
+  # Bump this when updating inkwell's llvm version feature.
+  LLVM_VERSION: "21.1.1"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Test on every push / PR / scheduled run
+  # -------------------------------------------------------------------------
+  test:
+    name: Test
+    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.merged == false) || github.event_name != 'pull_request' }}
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: C:/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-windows-x86_64
+
+      - name: Download and prepare LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Full developer tarball, includes llvm-config.exe and static .lib files
+          $url = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$env:LLVM_VERSION/llvm-$env:LLVM_VERSION-windows-amd64-msvc17-msvcrt.7z"
+          Invoke-WebRequest $url -OutFile "$env:TEMP\llvm.tar.xz" -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path C:\llvm | Out-Null
+          tar -xf "$env:TEMP\llvm.tar.xz" -C C:\llvm --strip-components=1
+          Remove-Item "$env:TEMP\llvm.tar.xz"
+
+      - name: Set LLVM env var prefix
+        shell: bash
+        run: echo "LLVM_SYS_211_PREFIX=C:/llvm" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-22
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Test
+        run: cargo test
+
+  # -------------------------------------------------------------------------
+  # Build artifacts (nightly schedule only)
+  # -------------------------------------------------------------------------
+  nightly-build:
+    name: Nightly Build
+    if: github.event_name == 'schedule'
+    needs: test
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: C:/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-windows-x86_64
+
+      - name: Download and prepare LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Full developer tarball, includes llvm-config.exe and static .lib files
+          $url = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$env:LLVM_VERSION/llvm-$env:LLVM_VERSION-windows-amd64-msvc17-msvcrt.7z"
+          Invoke-WebRequest $url -OutFile "$env:TEMP\llvm.tar.xz" -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path C:\llvm | Out-Null
+          tar -xf "$env:TEMP\llvm.tar.xz" -C C:\llvm --strip-components=1
+          Remove-Item "$env:TEMP\llvm.tar.xz"
+
+      - name: Set LLVM env var prefix
+        shell: bash
+        run: echo "LLVM_SYS_211_PREFIX=C:/llvm" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-22
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Stage debug artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact\debug | Out-Null
+          Copy-Item target\debug\vifc.exe artifact\debug\
+          Copy-Item target\debug\vifc.pdb artifact\debug\
+          Copy-Item -Recurse std artifact\debug\std
+
+      - name: Upload debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vifc-windows-debug
+          path: artifact/debug/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build (release)
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: "2"
+          CARGO_PROFILE_RELEASE_STRIP: "none"
+        run: cargo build --release --config .cargo/release.toml
+
+      - name: Stage release artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact\release | Out-Null
+          Copy-Item target\release\vifc.exe artifact\release\
+          Copy-Item target\release\vifc.pdb artifact\release\
+          Copy-Item -Recurse std artifact\release\std
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vifc-windows-release
+          path: artifact/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Bundle binary + pdb + std/, publish GitHub release (schedule only)
+  # -------------------------------------------------------------------------
+  nightly-publish:
+    name: Publish Nightly Release
+    if: github.event_name == 'schedule'
+    needs: nightly-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vifc-windows-release
+          path: dist/
+
+      # Rename to platform-tagged names then zip everything (exe + pdb + std/)
+      - name: Package release
+        run: |
+          mv dist/vifc.exe dist/vifc-windows-x86_64.exe
+          mv dist/vifc.pdb dist/vifc-windows-x86_64.pdb
+          cd dist && zip -r ../vifc-windows-x86_64.zip .
+
+      - name: Update nightly tag
+        run: |
+          git tag -f nightly
+          git push origin nightly --force
+
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly
+          body: |
+            Automated nightly build from `${{ github.sha }}`.
+
+            Extract the zip. It contains:
+            - `vifc-windows-x86_64.exe`: compiler binary
+            - `vifc-windows-x86_64.pdb`: debug symbols
+            - `std/`: standard library sources
+          prerelease: true
+          make_latest: false
+          files: vifc-windows-x86_64.zip

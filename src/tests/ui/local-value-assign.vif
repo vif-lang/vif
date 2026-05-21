@@ -1,0 +1,29 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+const S = struct { x: i32, y: i32 };
+
+fn set_x(s: *S, v: i32) void {
+    s.x = v;
+}
+
+fn add_to_x(s: *S, delta: i32) void {
+    const nx: i32 = s.x + delta;  // const local = FoundAndIsLocalValue
+    s.x = nx;
+}
+
+fn copy_x_to_y(s: *S) void {
+    const v: i32 = s.x;  // const local = FoundAndIsLocalValue
+    s.y = v;
+}
+
+fn main() void {
+    var s: S = S { .x = 0, .y = 0 };
+    set_x(&s, 10);
+    add_to_x(&s, 5);   // expected s.x = 15
+    copy_x_to_y(&s);   // expected s.y = 15
+    // expected: x=15 y=15
+    printf(std.slice.ptr("x=%d y=%d\n"), s.x, s.y);
+}
+
+//@ args: build

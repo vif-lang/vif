@@ -1,0 +1,16 @@
+extern fn bad_extern() void {
+}
+
+fn main() void {
+}
+
+//@ args: build
+//@ stderr:
+// error: extern functions cannot have a body
+//   --> src/tests/ui/extern-with-body-err.vif:1:11
+//   |
+// 1 | extern fn bad_extern() void {
+//   |           ^^^^^^^^^^
+//   |
+//   = note: remove the body or remove the `extern` modifier
+//

@@ -1,0 +1,15 @@
+fn bad() #callconv(1) void {
+}
+
+fn main() void {
+	bad();
+}
+
+//@ args: build
+//@ stderr:
+// error: expected type `CallingConvention`, found `anyint`
+//   --> src/tests/ui/callconv-type-err.vif:1:20
+//   |
+// 1 | fn bad() #callconv(1) void {
+//   |                    ^
+//

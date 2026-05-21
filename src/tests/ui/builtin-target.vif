@@ -1,0 +1,8 @@
+const target = @import("builtin").target;
+const arch = target.cpu.arch;
+const os = target.os;
+
+fn main() void {
+}
+
+//@ args: build

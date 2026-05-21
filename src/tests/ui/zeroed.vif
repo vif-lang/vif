@@ -1,0 +1,13 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+const S = struct { a: i32, b: i32, c: i32 };
+
+fn main() void {
+    var s: S = @zeroed();
+    printf(std.slice.ptr("%d %d %d\n"), s.a, s.b, s.c);
+}
+
+//@ args: run
+//@ stdout:
+// 0 0 0

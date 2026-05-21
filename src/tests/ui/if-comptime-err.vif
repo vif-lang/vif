@@ -1,0 +1,16 @@
+fn main() void {
+    if false {
+        // noop
+    } else {
+        var a: i32 = false;
+    }
+}
+
+//@ args: build
+//@ stderr:
+// error: expected type `i32`, found `bool`
+//   --> src/tests/ui/if-comptime-err.vif:5:13
+//   |
+// 5 |         var a: i32 = false;
+//   |             ^^^^^^^^^^^^^^
+//

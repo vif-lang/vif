@@ -1,0 +1,11 @@
+/// Builtin types and constants that are not injected directly as prelude symbols.
+
+const Target = @import("Target.vif");
+
+/// Calling conventions, should be in sync with compiler internals.
+pub const CallingConvention = enum(u8) {
+	c,
+	fast,
+	cold,
+	winapi,
+};

@@ -1,0 +1,3 @@
+[toolchain]
+channel    = "nightly-2026-04-17"
+components = ['miri', 'clippy', 'rustfmt', 'rust-src', 'rust-analyzer']

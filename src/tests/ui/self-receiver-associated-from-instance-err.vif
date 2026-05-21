@@ -1,0 +1,21 @@
+const S = struct {
+    a: i32,
+
+    pub fn associated() i32 {
+        42
+    }
+};
+
+fn main() void {
+    var instance: S = .{ .a = 42 };
+    instance.associated();
+}
+
+//@ args: build
+//@ stderr:
+// error: `associated` is not a member function
+//    --> src/tests/ui/self-receiver-associated-from-instance-err.vif:11:14
+//    |
+// 11 |     instance.associated();
+//    |              ^^^^^^^^^^
+//

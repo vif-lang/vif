@@ -1,0 +1,26 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+const State = enum {
+    Start,
+    Middle,
+    End,
+};
+
+fn score(state: State) usize {
+    var result: usize = 0usize;
+    switch state {
+        State.Start => { result = 1usize; }
+        State.Middle => { result = 2usize; }
+        State.End => { result = 3usize; }
+    }
+    return result;
+}
+
+fn main() void {
+    printf(std.slice.ptr("%u\n"), score(State.Start) + score(State.Middle) + score(State.End));
+}
+
+//@ args: run
+//@ stdout:
+// 6

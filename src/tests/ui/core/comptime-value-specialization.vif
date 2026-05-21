@@ -1,0 +1,18 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+fn add_n(comptime N: usize, value: usize) usize {
+    return value + N;
+}
+
+fn main() void {
+    const a = add_n(1usize, 10usize);
+    const b = add_n(2usize, a);
+    const c = add_n(3usize, b);
+    const d = add_n(4usize, c);
+    printf(std.slice.ptr("%u\n"), d);
+}
+
+//@ args: run
+//@ stdout:
+// 20

@@ -1,0 +1,10 @@
+fn main() void {
+    if true {
+        var a: i32 = 23;
+    } else {
+        // should not be analyzed
+        var a: i32 = false;
+    }
+}
+
+//@ args: build

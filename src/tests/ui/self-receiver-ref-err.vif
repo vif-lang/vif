@@ -1,0 +1,21 @@
+const S = struct {
+    a: i32,
+
+    pub fn by_ref(self: *Self) i32 {
+        self.a
+    }
+};
+
+fn main() void {
+    var instance: S = .{ .a = 42 };
+    S.by_ref(instance);
+}
+
+//@ args: build
+//@ stderr:
+// error: expected type `*S`, found `S`
+//    --> src/tests/ui/self-receiver-ref-err.vif:11:14
+//    |
+// 11 |     S.by_ref(instance);
+//    |              ^^^^^^^^
+//

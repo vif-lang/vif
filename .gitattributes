@@ -1,0 +1,16 @@
+[attr]rust text eol=lf whitespace=tab-in-indent,trailing-space,tabwidth=4
+
+*				text=auto eol=lf
+*.rs			rust diff=rust
+
+*.bat			text eol=crlf
+*.cmd			text eol=crlf
+*.ps1			text eol=crlf
+
+*.toml			text diff=toml
+*.md			text diff=markdown
+Cargo.lock		text linguist-generated=true
+
+.gitattributes	export-ignore
+.gitignore		export-ignore
+.gitkeep		export-ignore

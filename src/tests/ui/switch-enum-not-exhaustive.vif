@@ -1,0 +1,28 @@
+const Color = enum {
+    Red,
+    Green,
+    Blue,
+};
+
+fn main() void {
+    var c: Color = Color.Red;
+    switch c {
+        Color.Red => { var a: i32 = 1; }
+        Color.Green => { var a: i32 = 2; }
+    }
+}
+
+//@ args: build
+//@ stderr:
+// error: switch is not exhaustive, missing variant `Blue`
+//    --> src/tests/ui/switch-enum-not-exhaustive.vif:9:5
+//    |
+// 9  |     switch c {
+//    |     ^^^^^^^^^^
+// 10 |         Color.Red => { var a: i32 = 1; }
+//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 11 |         Color.Green => { var a: i32 = 2; }
+//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 12 |     }
+//    | ^^^^^
+//

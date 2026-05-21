@@ -1,0 +1,26 @@
+[unstable]
+build-std                  = ["core", "std", "alloc", "panic_abort"]
+checksum-freshness         = true
+no-embed-metadata          = true
+profile-hint-mostly-unused = true
+trim-paths                 = true
+
+[profile.release]
+codegen-units    = 1
+debug            = false
+debug-assertions = false
+incremental      = false
+lto              = "fat"
+opt-level        = 3
+overflow-checks  = false
+panic            = "abort"
+split-debuginfo  = "packed"
+strip            = true
+trim-paths       = true
+
+[profile.release.build-override]
+codegen-units = 256
+opt-level     = 1
+
+[build]
+rustflags = ["-Zshare-generics=y", "-Zthreads=16"]

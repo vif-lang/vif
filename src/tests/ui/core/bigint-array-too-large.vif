@@ -1,0 +1,14 @@
+fn main() void {
+    var arr: [340282366920938463463374607431768211456]u8 = undefined;
+}
+
+//@ args: build
+//@ stderr:
+// error: array length `340282366920938463463374607431768211456` too big to len_span in an array
+//   --> src/tests/ui/core/bigint-array-too-large.vif:2:15
+//   |
+// 2 |     var arr: [340282366920938463463374607431768211456]u8 = undefined;
+//   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//   |
+//   = note: maximum length of an array is 18446744073709551615 (u64 maximum value)
+//
