@@ -70,11 +70,7 @@ pub fn compute_fn_abi<'ctx>(
 
 		// runtime function parameters
 		for (i, declared_param) in fn_ty.params.iter().enumerate().filter(|(i, _)| !fn_ty.comptime_params[*i]) {
-			let concrete_ty = if i < fn_ty.params.len() {
-				fn_ty.params[i]
-			} else {
-				*declared_param
-			};
+			let concrete_ty = if i < fn_ty.params.len() { fn_ty.params[i] } else { *declared_param };
 
 			let llvm_ty = lowerer.lower_type(concrete_ty);
 

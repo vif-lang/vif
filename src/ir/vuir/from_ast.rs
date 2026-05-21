@@ -272,7 +272,7 @@ struct Lowerer<'ast> {
 	errors: Vec<Diagnostic>,
 	// Precomputed line starts for fast (line, col) mapping
 	line_starts: Vec<usize>,
-	imports: BumpVec<'static, Intern<[u8]>>,
+	imports: BumpVec<'static, vuir::Import>,
 
 	/// If in a function, points to the root scope
 	fn_body_root_scope: Option<ScopeId>,
@@ -1109,9 +1109,12 @@ impl<'ast> Lowerer<'ast> {
 				{
 					if !args.is_empty()
 						&& let ast::Arg::Positional(path) = args[0]
-						&& let ast::ExprKind::Lit(ast::Lit::Str(path)) = path.kind
+						&& let ast::ExprKind::Lit(ast::Lit::Str(import_path)) = path.kind
 					{
-						self.imports.push(*path);
+						self.imports.push(vuir::Import {
+							path: *import_path,
+							span: path.span,
+						});
 					} else {
 						self.errors.push(
 							Diagnostic::error()

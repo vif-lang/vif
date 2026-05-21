@@ -1,24 +1,17 @@
-use std::{
-	cell::UnsafeCell,
-	path::PathBuf,
-	sync::{
-		Arc,
-		OnceLock,
-		nonpoison::Mutex,
-	},
+use std::sync::{
+	Arc,
+	OnceLock,
+	nonpoison::Mutex,
 };
 
-use internment::Intern;
 use relative_path::RelativePathBuf;
-use rustc_hash::FxHashMap;
 
 use crate::{
-	common::diagnostic::Diagnostic,
-	compile_unit::{
-		DeclId,
-		NamespaceId,
+	common::diagnostic::{
+		DiagSpan,
+		Diagnostic,
 	},
-	frontend::ast,
+	compile_unit::NamespaceId,
 	ir::vuir::Vuir,
 	value,
 };
@@ -36,11 +29,29 @@ pub enum ModuleAnalyzeState {
 #[derive(Debug)]
 pub struct Module {
 	pub path: RelativePathBuf,
-	pub content: OnceLock<std::io::Result<String>>,
-	pub ast: OnceLock<Result<ast::Module, Vec<Diagnostic>>>,
-	pub vuir: OnceLock<Result<Vuir, Vec<Diagnostic>>>,
+	pub first_imported_by: Option<DiagSpan>,
+	pub source: OnceLock<String>,
+	pub vuir: OnceLock<Vuir>,
 	pub namespace: OnceLock<NamespaceId>,
-	pub analyze: Mutex<ModuleAnalyzeState>,
+	pub sema_state: Mutex<ModuleAnalyzeState>,
+	pub diagnostics: Mutex<Vec<Diagnostic>>,
+}
+
+impl Module {
+	pub fn new(
+		path: RelativePathBuf,
+		first_imported_by: Option<DiagSpan>,
+	) -> Self {
+		Self {
+			path,
+			first_imported_by,
+			source: Default::default(),
+			vuir: Default::default(),
+			namespace: Default::default(),
+			sema_state: Default::default(),
+			diagnostics: Default::default(),
+		}
+	}
 }
 
 #[repr(transparent)]

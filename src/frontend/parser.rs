@@ -3207,7 +3207,9 @@ impl Parser {
 					self.push_error(err);
 					if self.offset == start_offset {
 						self.offset += 1;
-						if self.eat_until2(TokenTag::Semicolon, closing_tok) == TokenKind::Semicolon { self.offset += 1 }
+						if self.eat_until2(TokenTag::Semicolon, closing_tok) == TokenKind::Semicolon {
+							self.offset += 1
+						}
 					}
 				},
 			}

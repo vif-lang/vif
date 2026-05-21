@@ -6,7 +6,6 @@ use std::{
 		Formatter,
 	},
 	io::Write,
-	sync::OnceLock,
 };
 
 use owo_colors::{
@@ -38,7 +37,7 @@ impl DiagSpan {
 		&self,
 		modules: &'a IndexVec<ModuleId, ArcModule>,
 	) -> &'a str {
-		modules[self.module].content.get().unwrap().as_deref().unwrap()
+		modules[self.module].source.get().unwrap().as_str()
 	}
 
 	pub fn start_line_col(

@@ -19,6 +19,7 @@ pub use opcodes::*;
 use crate::common::{
 	IndexVec,
 	RcLinearAllocator,
+	Span,
 };
 
 #[allow(clippy::upper_case_acronyms)]
@@ -32,10 +33,16 @@ pub type InstructionId = super::id::InstructionId<VUIR>;
 pub type InstructionRef = super::id::InstructionRef<VUIR>;
 
 #[derive(Debug)]
+pub struct Import {
+	pub path: Intern<[u8]>,
+	pub span: Span,
+}
+
+#[derive(Debug)]
 pub struct Vuir {
 	pub instructions: IndexVec<InstructionId, Opcode>,
 	pub instructions_payload_allocator: Box<SyncView<Bump>>,
-	pub imports: &'static [Intern<[u8]>],
+	pub imports: &'static [Import],
 }
 
 impl Vuir {

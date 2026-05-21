@@ -4,6 +4,6 @@
 //! - VUIR: unresolved IR (untyped, pre-semantic analysis)
 //! - VTIR: typed IR (typed, post-semantic analysis)
 
+pub mod id;
 pub mod vtir;
 pub mod vuir;
-pub mod id;

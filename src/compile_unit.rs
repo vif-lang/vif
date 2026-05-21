@@ -10,7 +10,6 @@ use std::{
 	},
 	sync::{
 		Arc,
-		OnceLock,
 		nonpoison::{
 			Mutex,
 			RwLock,
@@ -365,46 +364,11 @@ impl CompilationUnit {
 
 		let (modules, root_module, builtin_prelude_module, std_module, builtin_module, std_rt_module) = {
 			let mut modules = IndexVec::default();
-			let root_module: ModuleId = modules.push(ArcModule::new(Module {
-				path: root_module_path.clone(),
-				content: OnceLock::default(),
-				ast: OnceLock::default(),
-				vuir: OnceLock::default(),
-				namespace: Default::default(),
-				analyze: Default::default(),
-			}));
-			let builtin_prelude_module = modules.push(ArcModule::new(Module {
-				path: std_path.join("builtin_prelude.vif"),
-				content: OnceLock::default(),
-				ast: OnceLock::default(),
-				vuir: OnceLock::default(),
-				namespace: Default::default(),
-				analyze: Default::default(),
-			}));
-			let std_module = modules.push(ArcModule::new(Module {
-				path: std_path.join("std.vif"),
-				content: OnceLock::default(),
-				ast: OnceLock::default(),
-				vuir: OnceLock::default(),
-				namespace: Default::default(),
-				analyze: Default::default(),
-			}));
-			let builtin_module = modules.push(ArcModule::new(Module {
-				path: std_path.join("builtin.vif"),
-				content: OnceLock::default(),
-				ast: OnceLock::default(),
-				vuir: OnceLock::default(),
-				namespace: Default::default(),
-				analyze: Default::default(),
-			}));
-			let std_rt_module = modules.push(ArcModule::new(Module {
-				path: std_path.join("rt.vif"),
-				content: OnceLock::default(),
-				ast: OnceLock::default(),
-				vuir: OnceLock::default(),
-				namespace: Default::default(),
-				analyze: Default::default(),
-			}));
+			let root_module: ModuleId = modules.push(ArcModule::new(Module::new(root_module_path.clone(), None)));
+			let builtin_prelude_module = modules.push(ArcModule::new(Module::new(std_path.join("builtin_prelude.vif"), None)));
+			let std_module = modules.push(ArcModule::new(Module::new(std_path.join("std.vif"), None)));
+			let builtin_module = modules.push(ArcModule::new(Module::new(std_path.join("builtin.vif"), None)));
+			let std_rt_module = modules.push(ArcModule::new(Module::new(std_path.join("rt.vif"), None)));
 			(
 				modules,
 				root_module,
@@ -549,22 +513,9 @@ pub const target: Target = Target {{
 		// print any module errors if any
 		if let Some(module) = self.failed_modules.lock().iter().next() {
 			let module = &modules[module];
-			let ast = module.ast.get().unwrap();
-
-			// ast errors
-			if let Err(diags) = ast {
-				for diag in diags {
-					let _ = DiagnosticWriter::new(diag, &modules, stderr, !launch_args.ui_testing).write();
-				}
-			}
-
-			// vuir errors
-			if let Some(vuir) = module.vuir.get()
-				&& let Err(diags) = vuir
-			{
-				for diag in diags {
-					let _ = DiagnosticWriter::new(diag, &modules, stderr, !launch_args.ui_testing).write();
-				}
+			let diagnostics = module.diagnostics.lock().clone();
+			for diag in &diagnostics {
+				let _ = DiagnosticWriter::new(diag, &modules, stderr, !launch_args.ui_testing).write();
 			}
 
 			return Err(BuildError::ParsingError);
@@ -631,9 +582,9 @@ pub const target: Target = Target {{
 		}
 
 		loop {
-			let claimed = module.analyze.with_mut(|s| match s {
+			let claimed = module.sema_state.with_mut(|state| match state {
 				ModuleAnalyzeState::Pending => {
-					*s = ModuleAnalyzeState::InProgress;
+					*state = ModuleAnalyzeState::InProgress;
 					true
 				},
 				_ => false,
@@ -641,16 +592,16 @@ pub const target: Target = Target {{
 			if claimed {
 				match Self::job_analyze_module(self, module_id) {
 					Ok(value) => {
-						module.analyze.with_mut(|s| *s = ModuleAnalyzeState::Done(value));
+						module.sema_state.with_mut(|state| *state = ModuleAnalyzeState::Done(value));
 						return Ok(value);
 					},
 					Err(e) => {
-						module.analyze.with_mut(|s| *s = ModuleAnalyzeState::Failed);
+						module.sema_state.with_mut(|state| *state = ModuleAnalyzeState::Failed);
 						return Err(e);
 					},
 				}
 			}
-			match module.analyze.with_mut(|s| s.clone()) {
+			match module.sema_state.lock().clone() {
 				ModuleAnalyzeState::Pending => unreachable!(),
 				ModuleAnalyzeState::InProgress => {
 					match rayon::yield_now() {
@@ -705,29 +656,51 @@ pub const target: Target = Target {{
 		let module = self.modules.with(|modules| modules[module_id].clone());
 		profiling::scope!("parse module", format!("{:?}", module.path).as_str());
 
-		let file = {
+		let source = {
 			let absolute_path = &module.path.to_path(&self.cwd);
-			let Ok(mut file) = File::open(absolute_path) else {
-				panic!("cannot open file {absolute_path:?}");
+			let mut file = match File::open(absolute_path) {
+				Ok(file) => file,
+				Err(_) => {
+					let mut diag = Diagnostic::error().with_message(format!("cannot open module `{}`", module.path));
+					if let Some(imported_from) = module.first_imported_by {
+						diag = diag.with_label(Label::primary().with_span(imported_from).with_message("imported here"));
+					}
+					module.diagnostics.with_mut(|diagnostics| diagnostics.push(diag));
+					self.failed_modules.with_mut(|failed_modules| {
+						failed_modules.push(module_id);
+					});
+					return;
+				},
 			};
 
 			let mut buffer = String::new();
-			file.read_to_string(&mut buffer).expect("cannot read the file");
+			if let Err(err) = file.read_to_string(&mut buffer) {
+				let mut diag = Diagnostic::error().with_message(format!("cannot read module `{}`: {}", module.path, err));
+				if let Some(imported_from) = module.first_imported_by {
+					diag = diag.with_label(Label::primary().with_span(imported_from).with_message("imported here"));
+				}
+				module.diagnostics.with_mut(|diagnostics| diagnostics.push(diag));
+				self.failed_modules.with_mut(|failed_modules| {
+					failed_modules.push(module_id);
+				});
+				return;
+			}
 
 			if module_id == self.builtin_module {
 				buffer.push_str(&self.inject_builtin_declarations());
 			}
 
+			// lexer expect NUL terminator to identify end of the file as it does not check length
 			buffer.push('\0');
 			buffer
 		};
 
 		// ast
-		let ast = frontend::parser::Parser::new(file.as_str(), module_id).parse_module();
+		let ast = frontend::parser::Parser::new(&source, module_id).parse_module();
 
 		// now to vuir
 		let vuir = if let Ok(ast) = &ast {
-			Some(ir::vuir::from_ast::to_vuir(self, &file, module_id, ast))
+			Some(ir::vuir::from_ast::to_vuir(self, &source, module_id, ast))
 		} else {
 			None
 		};
@@ -739,64 +712,75 @@ pub const target: Target = Target {{
 			});
 		}
 
-		module.content.set(Ok(file)).expect("a module content can only be set once");
+		let parsed_vuir = match (ast, vuir) {
+			(Ok(_ast), Some(Ok(vuir))) => {
+				module.source.set(source).unwrap();
+				// vuir is set later
+				Some(vuir)
+			},
+			(Err(diags), _) | (_, Some(Err(diags))) => {
+				module.source.set(source).unwrap();
+				module.diagnostics.with_mut(|diagnostics| *diagnostics = diags);
+				None
+			},
+			_ => unreachable!("module parse failed without diagnostics"),
+		};
 
-		module.ast.set(ast).expect("a module ast can only be set once");
-
-		if let Some(vuir) = vuir {
-			if let Ok(vuir) = &vuir {
-				// VUIR parsed, now parse imports and create their modules.
-				for import in vuir.imports.iter().filter_map(|import| match str::from_utf8(import).unwrap() {
+		if let Some(vuir) = parsed_vuir {
+			// VUIR parsed, now parse imports and create their modules.
+			for import in vuir
+				.imports
+				.iter()
+				.filter_map(|import| match str::from_utf8(&import.path).unwrap() {
 					// exclude imports that aren't files
 					"root" => None,
 					"std" => None,
 					"builtin" => None,
-					import => Some(import),
+					path => Some((path, import.span)),
 				}) {
-					let import_module_path = module.path.parent().unwrap().join(import).normalize();
+				let (import, import_span) = import;
+				let import_module_path = module.path.parent().unwrap().join(import).normalize();
 
-					let maybe_new_module = {
-						let mut module_path_to_id = self.module_path_to_id.lock();
-						if module_path_to_id.contains_key(&import_module_path) {
-							None
-						} else {
-							let module = self.modules.with_mut(|modules| {
-								let module = ArcModule::new(Module {
-									path: import_module_path.clone(),
-									content: OnceLock::default(),
-									ast: OnceLock::default(),
-									vuir: OnceLock::default(),
-									namespace: Default::default(),
-									analyze: Default::default(),
-								});
-								modules.push(module)
-							});
-							module_path_to_id.insert(import_module_path.clone(), module);
-							Some(module)
-						}
-					};
-
-					if let Some(module) = maybe_new_module {
-						let compilation_unit = self.clone();
-						scope.spawn(move |scope| compilation_unit.job_parse_module(scope, module));
+				let maybe_new_module = {
+					let mut module_path_to_id = self.module_path_to_id.lock();
+					if module_path_to_id.contains_key(&import_module_path) {
+						None
+					} else {
+						let module = self.modules.with_mut(|modules| {
+							let module = ArcModule::new(Module::new(
+								import_module_path.clone(),
+								Some(DiagSpan {
+									module: module_id,
+									span: import_span,
+								}),
+							));
+							modules.push(module)
+						});
+						module_path_to_id.insert(import_module_path.clone(), module);
+						Some(module)
 					}
-				}
+				};
 
-				if self
-					.build_args
-					.dump_vuir
-					.as_ref()
-					.is_some_and(|regex| regex.is_match(module.path.as_str()))
-				{
-					println!("--- START OF VUIR DUMP OF {:?} ---", module.path);
-					let stdout = std::io::stdout();
-					let mut handle = stdout.lock();
-					let _ = vuir.pretty_print(&mut handle);
-					println!("--- END OF VUIR DUMP OF {:?} ---", module.path);
+				if let Some(module) = maybe_new_module {
+					let compilation_unit = self.clone();
+					scope.spawn(move |scope| compilation_unit.job_parse_module(scope, module));
 				}
 			}
 
-			module.vuir.set(vuir).expect("a module vuir can only be set once");
+			if self
+				.build_args
+				.dump_vuir
+				.as_ref()
+				.is_some_and(|regex| regex.is_match(module.path.as_str()))
+			{
+				println!("--- START OF VUIR DUMP OF {:?} ---", module.path);
+				let stdout = std::io::stdout();
+				let mut handle = stdout.lock();
+				let _ = vuir.pretty_print(&mut handle);
+				println!("--- END OF VUIR DUMP OF {:?} ---", module.path);
+			}
+
+			module.vuir.set(vuir).unwrap();
 		}
 	}
 
@@ -812,7 +796,7 @@ pub const target: Target = Target {{
 			let module = &modules[module_id];
 			profiling::scope!("analyze module", format!("{:?}", module.path).as_str());
 
-			let Some(Ok(vuir)) = &module.vuir.get() else {
+			let Some(vuir) = module.vuir.get() else {
 				return Err(sema::AnalyzeError::AnalysisFailed);
 			};
 
@@ -841,7 +825,6 @@ pub const target: Target = Target {{
 				unreachable!("module root must be a struct, other types are not supported")
 			};
 
-			
 			{
 				let mut sema = Sema::new(self, vuir, module_id, module_decl_id, None);
 				let block = {
@@ -871,11 +854,11 @@ pub const target: Target = Target {{
 					}
 
 					let builtin_prelude_module = &modules[self.builtin_prelude_module];
-					let builtin_prelude_module_ns = builtin_prelude_module.namespace.get().unwrap();
+					let builtin_prelude_module_ns = *builtin_prelude_module.namespace.get().unwrap();
 
 					// SAFETY: tkt frere
 					let [builtin_prelude_module_ns, module_namespace] =
-						unsafe { namespaces.get_disjoint_unchecked_mut([*builtin_prelude_module_ns, module_namespace]) };
+						unsafe { namespaces.get_disjoint_unchecked_mut([builtin_prelude_module_ns, module_namespace]) };
 
 					module_namespace.owner_type = value;
 
@@ -898,7 +881,10 @@ pub const target: Target = Target {{
 					}
 				});
 
-				module.namespace.set(module_namespace).expect("module namespace was already set");
+				module
+					.namespace
+					.set(module_namespace)
+					.unwrap_or_else(|_| unreachable!("module namespace was already published"));
 
 				// store analysis
 				self.decls.with_mut(|decls| {
@@ -955,14 +941,14 @@ pub const target: Target = Target {{
 				});
 
 				let module = self.modules.with(|modules| modules[module_id].clone());
-				let vuir = module.vuir.get().as_ref().unwrap().as_ref().unwrap();
+				let vuir = module.vuir.get().unwrap();
 
 				// get the decl instruction to resolve its body
 				let ir::vuir::Opcode::Declaration(decl_inst) = &vuir.instructions[vuir_id] else {
 					unreachable!("{} must be a declaration", vuir_id);
 				};
 
-				let mut sema = Sema::new(self, vuir, module_id, decl_id, None);
+				let mut sema = Sema::new(self, &vuir, module_id, decl_id, None);
 				let block = {
 					sema.blocks.push(sema::Block {
 						parent: None,
@@ -1003,7 +989,7 @@ pub const target: Target = Target {{
 				let fun_ty = self.values.index_to_key(fun.ty).as_type_fn();
 
 				let module = self.modules.with(|modules| modules[fun_decl.func_decl_inst.module].clone());
-				let vuir = module.vuir.get().unwrap().as_ref().unwrap();
+				let vuir = module.vuir.get().unwrap();
 
 				let ir::vuir::Opcode::DeclFn { body, params, builtin, .. } = &vuir.instructions[fun_decl.func_decl_inst.inst] else {
 					unreachable!();
@@ -1016,7 +1002,7 @@ pub const target: Target = Target {{
 
 				let body = {
 					// collect fn params
-					let mut sema = Sema::new(self, vuir, fun_decl.func_decl_inst.module, fun_decl.owner_decl, Some(interned_fun));
+					let mut sema = Sema::new(self, &vuir, fun_decl.func_decl_inst.module, fun_decl.owner_decl, Some(interned_fun));
 					let block = sema.blocks.push(sema::Block {
 						namespace,
 						parent: None,

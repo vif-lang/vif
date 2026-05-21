@@ -46,6 +46,7 @@ use crate::{
 	},
 	frontend::ast,
 	ir::{
+		id::*,
 		vtir::{
 			self,
 			Vtir,
@@ -54,7 +55,6 @@ use crate::{
 			self,
 			Vuir,
 		},
-		id::*,
 	},
 	value::{
 		self,
@@ -2198,8 +2198,8 @@ impl<'a> Sema<'a> {
 				let decl = self
 					.lookup_decl_in_namespace_recursively(self.blocks[block].namespace, ident.symbol)
 					.ok_or_else(|| {
-						let module_value = self.cu.modules.with(|modules| match &*modules[self.module].analyze.lock() {
-							ModuleAnalyzeState::Done(v) => *v,
+						let module_value = self.cu.modules.with(|modules| match *modules[self.module].sema_state.lock() {
+							ModuleAnalyzeState::Done(v) => v,
 							_ => self.cu.values.common.unreachable_value,
 						});
 						self.diag_decl_not_found(&ident.symbol, &module_value, &ident.span);
@@ -2213,8 +2213,8 @@ impl<'a> Sema<'a> {
 				let decl = self
 					.lookup_decl_in_namespace_recursively(self.blocks[block].namespace, ident.symbol)
 					.ok_or_else(|| {
-						let module_value = self.cu.modules.with(|modules| match &*modules[self.module].analyze.lock() {
-							ModuleAnalyzeState::Done(v) => *v,
+						let module_value = self.cu.modules.with(|modules| match *modules[self.module].sema_state.lock() {
+							ModuleAnalyzeState::Done(v) => v,
 							_ => self.cu.values.common.unreachable_value,
 						});
 						self.diag_decl_not_found(&ident.symbol, &module_value, &ident.span);

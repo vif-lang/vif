@@ -68,6 +68,7 @@ use crate::{
 	},
 	frontend::ast,
 	ir::{
+		id::*,
 		vtir::{
 			self,
 			Vtir,
@@ -76,7 +77,6 @@ use crate::{
 			self,
 			Vuir,
 		},
-		id::*,
 	},
 	value::{
 		self,

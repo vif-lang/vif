@@ -155,8 +155,7 @@ impl<'a> Sema<'a> {
 		let fn_decl_origin_module = self.cu.modules.with(|modules| modules[func_decl.func_decl_inst.module].clone());
 
 		// SAFETY: we transmute lifetime to circumvent borrow checker limitations, we only use VuirFnInfo for the duration of the analyze call
-		let fn_decl_origin_module_vuir: &'static Vuir =
-			unsafe { std::mem::transmute(fn_decl_origin_module.vuir.get().unwrap().as_ref().unwrap()) };
+		let fn_decl_origin_module_vuir: &'static Vuir = unsafe { std::mem::transmute(fn_decl_origin_module.vuir.get().unwrap()) };
 
 		let vuir::Opcode::DeclFn {
 			body,
