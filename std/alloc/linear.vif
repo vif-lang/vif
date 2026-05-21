@@ -2,90 +2,90 @@ const slice = @import("std").slice;
 
 /// A simple block based linear-allocator backed by another allocator
 fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: usize) type {
-    struct {
-        const Block = struct {
-            data: []u8,
-            /// Next block in the chain, stored as usize (null = 0)
-            next: usize
-        };
+	struct {
+		const Block = struct {
+			data: []u8,
+			/// Next block in the chain, stored as usize (null = 0)
+			next: usize
+		};
 
-        /// Underlying allocator used to request new blocks of memory
-        backing_allocator: backing_allocator_ty,
-        /// Head of the block list (for future deallocation)
-        first_block: *Block,
-        /// Block currently being carved into
-        cur_block: *Block,
-        /// Byte offset of the next free byte within cur_block.data
-        cur_offset: usize,
+		/// Underlying allocator used to request new blocks of memory
+		backing_allocator: backing_allocator_ty,
+		/// Head of the block list (for future deallocation)
+		first_block: *Block,
+		/// Block currently being carved into
+		cur_block: *Block,
+		/// Byte offset of the next free byte within cur_block.data
+		cur_offset: usize,
 
-        fn new(backing_allocator: backing_allocator_ty) Self {
-            .{
-                .backing_allocator = backing_allocator,
-                .first_block = @nullptr(),
-                .cur_block = @nullptr(),
-                .cur_offset = 0,
-            }
-        }
+		fn new(backing_allocator: backing_allocator_ty) Self {
+			.{
+				.backing_allocator = backing_allocator,
+				.first_block = @nullptr(),
+				.cur_block = @nullptr(),
+				.cur_offset = 0,
+			}
+		}
 
-        /// Allocate a new block from the backing allocator and append it to the chain.
-        fn grow(self: *Self) void {
-            // Embed the Block header at the start of each raw allocation:
-            // [ Block header | data...block_size_in_bytes bytes... ]
-            const total: usize = @size_of(Block) + block_size_in_bytes;
-            const raw: []u8 = self.backing_allocator.allocate(total);
+		/// Allocate a new block from the backing allocator and append it to the chain.
+		fn grow(self: *Self) void {
+			// Embed the Block header at the start of each raw allocation:
+			// [ Block header | data...block_size_in_bytes bytes... ]
+			const total: usize = @size_of(Block) + block_size_in_bytes;
+			const raw: []u8 = self.backing_allocator.allocate(total);
 
-            const block_addr: usize = @ptr_to_int(slice.ptr(raw));
-            const block: *Block = @int_to_ptr(block_addr);
+			const block_addr: usize = @ptr_to_int(slice.ptr(raw));
+			const block: *Block = @int_to_ptr(block_addr);
 
-            const data_addr: usize = block_addr + @size_of(Block);
-            const data_ptr: *const u8 = @int_to_ptr(data_addr);
-            block.data = slice.from_raw_parts(data_ptr, block_size_in_bytes);
-            block.next = 0;
+			const data_addr: usize = block_addr + @size_of(Block);
+			const data_ptr: *const u8 = @int_to_ptr(data_addr);
+			block.data = slice.from_raw_parts(data_ptr, block_size_in_bytes);
+			block.next = 0;
 
-            if self.first_block == @nullptr($T: *Block) {
-                self.first_block = block;
-            } else {
-                self.cur_block.next = @ptr_to_int(block);
-            }
-            self.cur_block = block;
-            self.cur_offset = 0;
-        }
+			if self.first_block == @nullptr($T: *Block) {
+				self.first_block = block;
+			} else {
+				self.cur_block.next = @ptr_to_int(block);
+			}
+			self.cur_block = block;
+			self.cur_offset = 0;
+		}
 
-        /// Carve `size_in_bytes` bytes out of the current block, growing if needed.
-        fn allocate(self: *Self, size_in_bytes: usize) []u8 {
-            const needs_new_block: bool =
-                self.cur_block == @nullptr($T: *Block) or
-                self.cur_offset + size_in_bytes > block_size_in_bytes;
+		/// Carve `size_in_bytes` bytes out of the current block, growing if needed.
+		fn allocate(self: *Self, size_in_bytes: usize) []u8 {
+			const needs_new_block: bool =
+				self.cur_block == @nullptr($T: *Block) or
+				self.cur_offset + size_in_bytes > block_size_in_bytes;
 
-            if needs_new_block {
-                self.grow();
-            }
+			if needs_new_block {
+				self.grow();
+			}
 
-            const base_addr: usize = @ptr_to_int(slice.ptr(self.cur_block.data));
-            const alloc_addr: usize = base_addr + self.cur_offset;
-            const alloc_ptr: *const u8 = @int_to_ptr(alloc_addr);
-            self.cur_offset = self.cur_offset + size_in_bytes;
-            slice.from_raw_parts(alloc_ptr, size_in_bytes)
-        }
+			const base_addr: usize = @ptr_to_int(slice.ptr(self.cur_block.data));
+			const alloc_addr: usize = base_addr + self.cur_offset;
+			const alloc_ptr: *const u8 = @int_to_ptr(alloc_addr);
+			self.cur_offset = self.cur_offset + size_in_bytes;
+			slice.from_raw_parts(alloc_ptr, size_in_bytes)
+		}
 
-        fn deallocate(self: *Self, alloc: []const u8) void {
-            // noop, TODO(zino): try to revert previous alloc if it matches
-        }
+		fn deallocate(self: *Self, alloc: []const u8) void {
+			// noop, TODO(zino): try to revert previous alloc if it matches
+		}
 
-        /// Free all blocks back to the backing allocator and reset state.
-        fn deinit(self: *Self) void {
-            var block: *Block = self.first_block;
-            //TODO WHILE LOOP
-            //while block != @nullptr($T: *Block) {
-            //    const next_addr: usize = block.next;
-            //    const raw_ptr: *const u8 = @int_to_ptr(@ptr_to_int(block));
-            //    const total: usize = @size_of(Block) + block_size_in_bytes;
-           //     self.backing_allocator.deallocate(slice.from_raw_parts(raw_ptr, total));
-            //    block = @int_to_ptr(next_addr);
-            //}
-            self.first_block = @nullptr();
-            self.cur_block = @nullptr();
-            self.cur_offset = 0;
-        }
-    }
+		/// Free all blocks back to the backing allocator and reset state.
+		fn deinit(self: *Self) void {
+			var block: *Block = self.first_block;
+			//TODO WHILE LOOP
+			//while block != @nullptr($T: *Block) {
+			//    const next_addr: usize = block.next;
+			//    const raw_ptr: *const u8 = @int_to_ptr(@ptr_to_int(block));
+			//    const total: usize = @size_of(Block) + block_size_in_bytes;
+			//     self.backing_allocator.deallocate(slice.from_raw_parts(raw_ptr, total));
+			//    block = @int_to_ptr(next_addr);
+			//}
+			self.first_block = @nullptr();
+			self.cur_block = @nullptr();
+			self.cur_offset = 0;
+		}
+	}
 }
