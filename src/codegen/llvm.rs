@@ -479,28 +479,15 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			// arithmtics
 			vtir::Opcode::Add { lhs, rhs } => {
-				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
-
 				let lhs = self.resolve_inst(lhs);
 				let rhs = self.resolve_inst(rhs);
 
 				if lhs.get_type().is_int_type() {
-					let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
-
-					let lhs = lhs.into_int_value();
-					let rhs = rhs.into_int_value();
-
-					let val = if signed {
-						self.builder().build_int_nsw_add(lhs, rhs, "")?
-					} else {
-						self.builder().build_int_nuw_add(lhs, rhs, "")?
-					};
-
+					let val = self.builder().build_int_add(lhs.into_int_value(), rhs.into_int_value(), "")?;
 					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_add(lhs.into_float_value(), rhs.into_float_value(), "")?;
-
 					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 				}
 			},
@@ -524,31 +511,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 			},
-			vtir::Opcode::AddWrap { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
-
-				let val = self.builder().build_int_add(lhs.into_int_value(), rhs.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
-			},
 			vtir::Opcode::Sub { lhs, rhs } => {
-				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
-
 				let lhs = self.resolve_inst(lhs);
 				let rhs = self.resolve_inst(rhs);
 
 				if lhs.get_type().is_int_type() {
-					let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
-
-					let lhs = lhs.into_int_value();
-					let rhs = rhs.into_int_value();
-
-					let val = if signed {
-						self.builder().build_int_nsw_sub(lhs, rhs, "")?
-					} else {
-						self.builder().build_int_nuw_sub(lhs, rhs, "")?
-					};
-
+					let val = self.builder().build_int_sub(lhs.into_int_value(), rhs.into_int_value(), "")?;
 					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
@@ -576,32 +544,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
 			},
-			vtir::Opcode::SubWrap { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
-
-				let val = self.builder().build_int_sub(lhs.into_int_value(), rhs.into_int_value(), "")?;
-
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
-			},
 			vtir::Opcode::Mul { lhs, rhs } => {
-				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
-
 				let lhs = self.resolve_inst(lhs);
 				let rhs = self.resolve_inst(rhs);
 
 				if lhs.get_type().is_int_type() {
-					let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
-
-					let lhs = lhs.into_int_value();
-					let rhs = rhs.into_int_value();
-
-					let val = if signed {
-						self.builder().build_int_nsw_mul(lhs, rhs, "")?
-					} else {
-						self.builder().build_int_nuw_mul(lhs, rhs, "")?
-					};
-
+					let val = self.builder().build_int_mul(lhs.into_int_value(), rhs.into_int_value(), "")?;
 					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
@@ -626,13 +574,6 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				let val = self.builder().build_call(mul_sat_fn, &[lhs_int.into(), rhs_int.into()], "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
-			},
-			vtir::Opcode::MulWrap { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
-
-				let val = self.builder().build_int_mul(lhs.into_int_value(), rhs.into_int_value(), "")?;
 				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Div { lhs, rhs } => {

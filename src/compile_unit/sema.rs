@@ -2614,13 +2614,10 @@ impl<'a> Sema<'a> {
 			// arithmetic
 			opcode @ (vuir::Opcode::Add { lhs, rhs, span }
 			| vuir::Opcode::AddSat { lhs, rhs, span }
-			| vuir::Opcode::AddWrap { lhs, rhs, span }
 			| vuir::Opcode::Sub { lhs, rhs, span }
 			| vuir::Opcode::SubSat { lhs, rhs, span }
-			| vuir::Opcode::SubWrap { lhs, rhs, span }
 			| vuir::Opcode::Mul { lhs, rhs, span }
 			| vuir::Opcode::MulSat { lhs, rhs, span }
-			| vuir::Opcode::MulWrap { lhs, rhs, span }
 			| vuir::Opcode::Div { lhs, rhs, span }
 			| vuir::Opcode::Rem { lhs, rhs, span }) => {
 				let lhs = self.resolve_inst(lhs);
@@ -3103,15 +3100,12 @@ impl<'a> Sema<'a> {
 		) {
 			(Some(value::Key::Int { value: lhs, .. }), Some(value::Key::Int { value: rhs, .. })) => {
 				let res = match inst {
-					vuir::Opcode::Add { .. } => lhs.as_ref() + rhs.as_ref(),
+					vuir::Opcode::Add { .. } => self.wrap_int_value(ty, lhs.as_ref() + rhs.as_ref()),
 					vuir::Opcode::AddSat { .. } => lhs.as_ref() + rhs.as_ref(),
-					vuir::Opcode::AddWrap { .. } => lhs.as_ref() + rhs.as_ref(),
-					vuir::Opcode::Sub { .. } => lhs.as_ref() - rhs.as_ref(),
+					vuir::Opcode::Sub { .. } => self.wrap_int_value(ty, lhs.as_ref() - rhs.as_ref()),
 					vuir::Opcode::SubSat { .. } => lhs.as_ref() - rhs.as_ref(),
-					vuir::Opcode::SubWrap { .. } => lhs.as_ref() - rhs.as_ref(),
-					vuir::Opcode::Mul { .. } => lhs.as_ref() * rhs.as_ref(),
+					vuir::Opcode::Mul { .. } => self.wrap_int_value(ty, lhs.as_ref() * rhs.as_ref()),
 					vuir::Opcode::MulSat { .. } => lhs.as_ref() * rhs.as_ref(),
-					vuir::Opcode::MulWrap { .. } => lhs.as_ref() * rhs.as_ref(),
 					vuir::Opcode::Div { .. } => lhs.as_ref() / rhs.as_ref(),
 					vuir::Opcode::Rem { .. } => lhs.as_ref() % rhs.as_ref(),
 					_ => unreachable!("{:?}", inst),
@@ -3128,12 +3122,7 @@ impl<'a> Sema<'a> {
 					vuir::Opcode::Mul { .. } => **lhs * **rhs,
 					vuir::Opcode::Div { .. } => **lhs / **rhs,
 					vuir::Opcode::Rem { .. } => todo!("float mod comptime op"),
-					vuir::Opcode::AddSat { .. }
-					| vuir::Opcode::AddWrap { .. }
-					| vuir::Opcode::SubSat { .. }
-					| vuir::Opcode::SubWrap { .. }
-					| vuir::Opcode::MulSat { .. }
-					| vuir::Opcode::MulWrap { .. } => {
+					vuir::Opcode::AddSat { .. } | vuir::Opcode::SubSat { .. } | vuir::Opcode::MulSat { .. } => {
 						// TODO(ldubos): create a proper error message for unsupported float ops
 						return Err(AnalyzeError::AnalysisFailed);
 					},
@@ -3173,13 +3162,10 @@ impl<'a> Sema<'a> {
 			_ => match inst {
 				vuir::Opcode::Add { .. } => self.inst(block, vtir::Opcode::Add { lhs, rhs }),
 				vuir::Opcode::AddSat { .. } => self.inst(block, vtir::Opcode::AddSat { lhs, rhs }),
-				vuir::Opcode::AddWrap { .. } => self.inst(block, vtir::Opcode::AddWrap { lhs, rhs }),
 				vuir::Opcode::Sub { .. } => self.inst(block, vtir::Opcode::Sub { lhs, rhs }),
 				vuir::Opcode::SubSat { .. } => self.inst(block, vtir::Opcode::SubSat { lhs, rhs }),
-				vuir::Opcode::SubWrap { .. } => self.inst(block, vtir::Opcode::SubWrap { lhs, rhs }),
 				vuir::Opcode::Mul { .. } => self.inst(block, vtir::Opcode::Mul { lhs, rhs }),
 				vuir::Opcode::MulSat { .. } => self.inst(block, vtir::Opcode::MulSat { lhs, rhs }),
-				vuir::Opcode::MulWrap { .. } => self.inst(block, vtir::Opcode::MulWrap { lhs, rhs }),
 				vuir::Opcode::Div { .. } => self.inst(block, vtir::Opcode::Div { lhs, rhs }),
 				vuir::Opcode::Rem { .. } => self.inst(block, vtir::Opcode::Rem { lhs, rhs }),
 				vuir::Opcode::BoolAnd { .. } => self.inst(block, vtir::Opcode::BoolAnd { lhs, rhs }),
@@ -3188,6 +3174,49 @@ impl<'a> Sema<'a> {
 			},
 		};
 		Ok(inst)
+	}
+
+	fn wrap_int_value(
+		&self,
+		ty: value::Index,
+		value: Anyint,
+	) -> Anyint {
+		let (signed, bits) = match self.cu.values.index_to_key(ty) {
+			value::Key::TypeInt { signed, bits } => (*signed, *bits as u64),
+			value::Key::TypeIsize => (true, self.cu.resolved_target.ptr_width_in_bits as u64),
+			value::Key::TypeUsize => (false, self.cu.resolved_target.ptr_width_in_bits as u64),
+			// `Anyint` aren't subject to wrap semantic
+			_ => return value,
+		};
+
+		let one = Anyint::from(1u64);
+		// modulus = 2^bits
+		let modulus = &one << bits;
+
+		// compute the wrapped value in the range: (-2^bits, 2^bits),
+		// depending on remainder semantics
+		let mut wrapped = &value % &modulus;
+
+		// normalize negative remainders into: [0, 2^bits)
+		if wrapped.is_negative() {
+			wrapped = &wrapped + &modulus;
+		}
+
+		// for signed integers, reinterpret the upper half of the
+		// unsigned range as negative values.
+		//
+		// e.g.
+		//
+		//   u-range :    0..255
+		//   s-range : -128..127
+		if signed {
+			let sign_bit = &one << (bits - 1);
+			if wrapped >= sign_bit {
+				wrapped = &wrapped - &modulus;
+			}
+		}
+
+		wrapped
 	}
 
 	fn analyze_bitwise_op(

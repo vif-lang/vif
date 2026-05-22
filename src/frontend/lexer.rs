@@ -350,22 +350,16 @@ tokens! {
 	MinusEq = "-=",
 	/// `-|`
 	MinusPipe = "-|",
-	/// `-%`
-	MinusPercent = "-%",
 	/// `+=`
 	PlusEq = "+=",
 	/// `+|`
 	PlusPipe = "+|",
-	/// `+%`
-	PlusPercent = "+%",
 	/// `**`
 	StarStar = "**",
 	/// `*=`
 	StarEq = "*=",
 	/// `*|`
 	StarPipe = "*|",
-	/// `*%`
-	StarPercent = "*%",
 	/// `/=`
 	SlashEq = "/=",
 	/// `%=`
@@ -398,8 +392,6 @@ tokens! {
 	FatArrow = "=>",
 	/// `..`
 	DotDot = "..",
-	/// `.#`
-	DotHash = ".#",
 	/// `.*`
 	DotStar = ".*",
 	/// `.?`
@@ -407,12 +399,8 @@ tokens! {
 
 	/// `-|=`
 	MinusPipeEq = "-|=",
-	/// `-%=`
-	MinusPercentEq = "-%=",
 	/// `+|=`
 	PlusPipeEq = "+|=",
-	/// `+%=`
-	PlusPercentEq = "+%=",
 	/// `<<=`
 	LtLtEq = "<<=",
 	/// `>>=`
@@ -425,16 +413,8 @@ tokens! {
 	LtLtPercent = "<<%",
 	/// `>>%`
 	GtGtPercent = ">>%",
-	/// `**|`
-	StarStarPipe = "**|",
-	/// `**%`
-	StarStarPercent = "**%",
-	/// `**=`
-	StarStarEq = "**=",
 	/// `*|=`
 	StarPipeEq = "*|=",
-	/// `*%=`
-	StarPercentEq = "*%=",
 	/// `&&=`
 	AmpAmpEq = "&&=",
 	/// `||=`
@@ -452,10 +432,6 @@ tokens! {
 	GtGtPipeEq = ">>|=",
 	/// `>>%=`
 	GtGtPercentEq = ">>%=",
-	/// `**|=`
-	StarStarPipeEq = "**|=",
-	/// `**%=`
-	StarStarPercentEq = "**%=",
 
 	/// Identifier
 	Ident {
@@ -656,19 +632,14 @@ impl<'src> Lexer<'src> {
 
 			Minus,
 			MinusPipe,
-			MinusPercent,
 
 			Plus,
 			PlusPipe,
-			PlusPercent,
 
 			Star,
 			StarPipe,
-			StarPercent,
 
 			StarStar,
-			StarStarPipe,
-			StarStarPercent,
 
 			Slash,
 			Percent,
@@ -908,11 +879,6 @@ impl<'src> Lexer<'src> {
 							#[const_continue]
 							break 'state MinusPipe;
 						},
-						b'%' => {
-							kind = TokenKind::MinusPercent;
-							#[const_continue]
-							break 'state MinusPercent;
-						},
 						_ => {
 							self.offset -= 1;
 							break 'lexer;
@@ -921,16 +887,6 @@ impl<'src> Lexer<'src> {
 					MinusPipe => match self.bump() {
 						b'=' => {
 							kind = TokenKind::MinusPipeEq;
-							break 'lexer;
-						},
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
-					},
-					MinusPercent => match self.bump() {
-						b'=' => {
-							kind = TokenKind::MinusPercentEq;
 							break 'lexer;
 						},
 						_ => {
@@ -948,11 +904,6 @@ impl<'src> Lexer<'src> {
 							#[const_continue]
 							break 'state PlusPipe;
 						},
-						b'%' => {
-							kind = TokenKind::PlusPercent;
-							#[const_continue]
-							break 'state PlusPercent;
-						},
 						_ => {
 							self.offset -= 1;
 							break 'lexer;
@@ -961,16 +912,6 @@ impl<'src> Lexer<'src> {
 					PlusPipe => match self.bump() {
 						b'=' => {
 							kind = TokenKind::PlusPipeEq;
-							break 'lexer;
-						},
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
-					},
-					PlusPercent => match self.bump() {
-						b'=' => {
-							kind = TokenKind::PlusPercentEq;
 							break 'lexer;
 						},
 						_ => {
@@ -989,11 +930,6 @@ impl<'src> Lexer<'src> {
 							#[const_continue]
 							break 'state StarPipe;
 						},
-						b'%' => {
-							kind = TokenKind::StarPercent;
-							#[const_continue]
-							break 'state StarPercent;
-						},
 						_ => {
 							self.offset -= 1;
 							break 'lexer;
@@ -1009,51 +945,7 @@ impl<'src> Lexer<'src> {
 							break 'lexer;
 						},
 					},
-					StarPercent => match self.bump() {
-						b'=' => {
-							kind = TokenKind::StarPercentEq;
-							break 'lexer;
-						},
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
-					},
 					StarStar => match self.bump() {
-						b'=' => {
-							kind = TokenKind::StarStarEq;
-							break 'lexer;
-						},
-						b'|' => {
-							kind = TokenKind::StarStarPipe;
-							#[const_continue]
-							break 'state StarStarPipe;
-						},
-						b'%' => {
-							kind = TokenKind::StarStarPercent;
-							#[const_continue]
-							break 'state StarStarPercent;
-						},
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
-					},
-					StarStarPipe => match self.bump() {
-						b'=' => {
-							kind = TokenKind::StarStarPipeEq;
-							break 'lexer;
-						},
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
-					},
-					StarStarPercent => match self.bump() {
-						b'=' => {
-							kind = TokenKind::StarStarPercentEq;
-							break 'lexer;
-						},
 						_ => {
 							self.offset -= 1;
 							break 'lexer;
@@ -1359,10 +1251,6 @@ impl<'src> Lexer<'src> {
 							kind = TokenKind::DotDot;
 							#[const_continue]
 							break 'state DotDot;
-						},
-						b'#' => {
-							kind = TokenKind::DotHash;
-							break 'lexer;
 						},
 						b'*' => {
 							kind = TokenKind::DotStar;

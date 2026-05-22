@@ -113,10 +113,6 @@ pub enum Opcode {
 		lhs: vtir::InstructionRef,
 		rhs: vtir::InstructionRef,
 	},
-	AddWrap {
-		lhs: vtir::InstructionRef,
-		rhs: vtir::InstructionRef,
-	},
 	Sub {
 		lhs: vtir::InstructionRef,
 		rhs: vtir::InstructionRef,
@@ -125,19 +121,11 @@ pub enum Opcode {
 		lhs: vtir::InstructionRef,
 		rhs: vtir::InstructionRef,
 	},
-	SubWrap {
-		lhs: vtir::InstructionRef,
-		rhs: vtir::InstructionRef,
-	},
 	Mul {
 		lhs: vtir::InstructionRef,
 		rhs: vtir::InstructionRef,
 	},
 	MulSat {
-		lhs: vtir::InstructionRef,
-		rhs: vtir::InstructionRef,
-	},
-	MulWrap {
 		lhs: vtir::InstructionRef,
 		rhs: vtir::InstructionRef,
 	},
@@ -341,13 +329,10 @@ pub fn type_of(
 				// arithmetics
 				Opcode::Add { lhs, .. }
 				| Opcode::AddSat { lhs, .. }
-				| Opcode::AddWrap { lhs, .. }
 				| Opcode::Sub { lhs, .. }
 				| Opcode::SubSat { lhs, .. }
-				| Opcode::SubWrap { lhs, .. }
 				| Opcode::Mul { lhs, .. }
 				| Opcode::MulSat { lhs, .. }
-				| Opcode::MulWrap { lhs, .. }
 				| Opcode::Div { lhs, .. }
 				| Opcode::Rem { lhs, .. } => type_of(values, instructions, lhs),
 

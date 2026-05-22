@@ -267,26 +267,14 @@ pub enum ExprKind {
 	Add(&'static BinOp),
 	/// `lhs +| rhs`
 	AddSat(&'static BinOp),
-	/// `lhs +% rhs`
-	AddWrap(&'static BinOp),
 	/// `lhs - rhs`
 	Sub(&'static BinOp),
 	/// `lhs -| rhs`
 	SubSat(&'static BinOp),
-	/// `lhs -% rhs`
-	SubWrap(&'static BinOp),
 	/// `lhs * rhs`
 	Mul(&'static BinOp),
 	/// `lhs *| rhs`
 	MulSat(&'static BinOp),
-	/// `lhs *% rhs`
-	MulWrap(&'static BinOp),
-	/// `lhs ** rhs`
-	Pow(&'static BinOp),
-	/// `lhs **| rhs`
-	PowSat(&'static BinOp),
-	/// `lhs **% rhs`
-	PowWrap(&'static BinOp),
 	/// `lhs / rhs`
 	Div(&'static BinOp),
 	/// `lhs % rhs`
@@ -950,26 +938,14 @@ pub enum AssignOp {
 	Add,
 	/// `+|=`
 	AddSat,
-	/// `+%=`
-	AddWrap,
 	/// `-=`
 	Sub,
 	/// `-|=`
 	SubSat,
-	/// `-%=`
-	SubWrap,
 	/// `*=`
 	Mul,
 	/// `*|=`
 	MulSat,
-	/// `*%=`
-	MulWrap,
-	/// `**=`
-	Pow,
-	/// `**|=`
-	PowSat,
-	/// `**%=`
-	PowWrap,
 	/// `/=`
 	Div,
 	/// `%=`
@@ -1007,16 +983,10 @@ impl core::fmt::Display for AssignOp {
 			AssignOp::Assign => write!(f, "="),
 			AssignOp::Add => write!(f, "+="),
 			AssignOp::AddSat => write!(f, "+|="),
-			AssignOp::AddWrap => write!(f, "+%="),
 			AssignOp::Sub => write!(f, "-="),
 			AssignOp::SubSat => write!(f, "-|="),
-			AssignOp::SubWrap => write!(f, "-%="),
 			AssignOp::Mul => write!(f, "*="),
 			AssignOp::MulSat => write!(f, "*|="),
-			AssignOp::MulWrap => write!(f, "*%="),
-			AssignOp::Pow => write!(f, "**="),
-			AssignOp::PowSat => write!(f, "**|="),
-			AssignOp::PowWrap => write!(f, "**%="),
 			AssignOp::Div => write!(f, "/="),
 			AssignOp::Rem => write!(f, "%="),
 			AssignOp::BitAnd => write!(f, "&="),

@@ -379,11 +379,6 @@ pub enum Opcode {
 		rhs: InstructionRef,
 		span: Span,
 	},
-	AddWrap {
-		lhs: InstructionRef,
-		rhs: InstructionRef,
-		span: Span,
-	},
 	Sub {
 		lhs: InstructionRef,
 		rhs: InstructionRef,
@@ -394,22 +389,12 @@ pub enum Opcode {
 		rhs: InstructionRef,
 		span: Span,
 	},
-	SubWrap {
-		lhs: InstructionRef,
-		rhs: InstructionRef,
-		span: Span,
-	},
 	Mul {
 		lhs: InstructionRef,
 		rhs: InstructionRef,
 		span: Span,
 	},
 	MulSat {
-		lhs: InstructionRef,
-		rhs: InstructionRef,
-		span: Span,
-	},
-	MulWrap {
 		lhs: InstructionRef,
 		rhs: InstructionRef,
 		span: Span,

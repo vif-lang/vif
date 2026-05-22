@@ -1,0 +1,36 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+fn add_wrap(a: u32, b: u32) u32 {
+    return a + b;
+}
+
+fn sub_wrap(a: u32, b: u32) u32 {
+    return a - b;
+}
+
+fn mul_wrap(a: u32, b: u32) u32 {
+    return a * b;
+}
+
+fn main() void {
+    comptime const max: u32 = 4294967295;
+    comptime const one: u32 = 1;
+    comptime const base: u32 = 65536;
+
+    comptime const comptime_add: u32 = max + one;
+    comptime const comptime_sub: u32 = 0 - one;
+    comptime const comptime_mul: u32 = base * base;
+
+    var runtime_add = add_wrap(max, one);
+    var runtime_sub = sub_wrap(0, one);
+    var runtime_mul = mul_wrap(base, base);
+
+    printf(std.slice.ptr("%u %u %u\n"), comptime_add, comptime_sub, comptime_mul);
+    printf(std.slice.ptr("%u %u %u\n"), runtime_add, runtime_sub, runtime_mul);
+}
+
+//@ args: run
+//@ stdout:
+// 0 4294967295 0
+// 0 4294967295 0

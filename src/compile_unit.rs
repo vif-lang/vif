@@ -948,7 +948,7 @@ pub const target: Target = Target {{
 					unreachable!("{} must be a declaration", vuir_id);
 				};
 
-				let mut sema = Sema::new(self, &vuir, module_id, decl_id, None);
+				let mut sema = Sema::new(self, vuir, module_id, decl_id, None);
 				let block = {
 					sema.blocks.push(sema::Block {
 						parent: None,
@@ -1002,7 +1002,7 @@ pub const target: Target = Target {{
 
 				let body = {
 					// collect fn params
-					let mut sema = Sema::new(self, &vuir, fun_decl.func_decl_inst.module, fun_decl.owner_decl, Some(interned_fun));
+					let mut sema = Sema::new(self, vuir, fun_decl.func_decl_inst.module, fun_decl.owner_decl, Some(interned_fun));
 					let block = sema.blocks.push(sema::Block {
 						namespace,
 						parent: None,

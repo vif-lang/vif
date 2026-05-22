@@ -1232,11 +1232,6 @@ impl<'ast> Lowerer<'ast> {
 				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
 				self.inst(block_scope, vuir::Opcode::AddSat { lhs, rhs, span: expr.span })
 			},
-			ast::ExprKind::AddWrap(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
-				self.inst(block_scope, vuir::Opcode::AddWrap { lhs, rhs, span: expr.span })
-			},
 			ast::ExprKind::Sub(&ast::BinOp { lhs, rhs }) => {
 				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
 				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
@@ -1247,11 +1242,6 @@ impl<'ast> Lowerer<'ast> {
 				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
 				self.inst(block_scope, vuir::Opcode::SubSat { lhs, rhs, span: expr.span })
 			},
-			ast::ExprKind::SubWrap(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
-				self.inst(block_scope, vuir::Opcode::SubWrap { lhs, rhs, span: expr.span })
-			},
 			ast::ExprKind::Mul(&ast::BinOp { lhs, rhs }) => {
 				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
 				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
@@ -1261,11 +1251,6 @@ impl<'ast> Lowerer<'ast> {
 				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
 				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
 				self.inst(block_scope, vuir::Opcode::MulSat { lhs, rhs, span: expr.span })
-			},
-			ast::ExprKind::MulWrap(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
-				self.inst(block_scope, vuir::Opcode::MulWrap { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Div(&ast::BinOp { lhs, rhs }) => {
 				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
@@ -1848,7 +1833,7 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		r#if: &'static ast::If,
-		rhs_ctx: ExprResultLocation,
+		_rhs_ctx: ExprResultLocation,
 	) -> vuir::InstructionRef {
 		let cond = (self.lower_expr(block_scope, r#if.cond, ExprResultLocation::None), r#if.cond.span);
 
@@ -1873,7 +1858,7 @@ impl<'ast> Lowerer<'ast> {
 			if let Some(r#else) = r#if.else_block {
 				match &r#else {
 					ast::ElseBlock::If(r#if) => {
-						let value = self.lower_expr_if(*scope, r#if, rhs_ctx);
+						let value = self.lower_expr_if(*scope, r#if, _rhs_ctx);
 						self.inst(*scope, vuir::Opcode::Break {
 							block: branch_block,
 							value,
@@ -2186,11 +2171,6 @@ impl<'ast> Lowerer<'ast> {
 								rhs: rhs_val,
 								span: stmt.span,
 							}),
-							ast::AssignOp::AddWrap => self.inst(block_scope, vuir::Opcode::AddWrap {
-								lhs: lhs_val,
-								rhs: rhs_val,
-								span: stmt.span,
-							}),
 							ast::AssignOp::Sub => self.inst(block_scope, vuir::Opcode::Sub {
 								lhs: lhs_val,
 								rhs: rhs_val,
@@ -2201,22 +2181,12 @@ impl<'ast> Lowerer<'ast> {
 								rhs: rhs_val,
 								span: stmt.span,
 							}),
-							ast::AssignOp::SubWrap => self.inst(block_scope, vuir::Opcode::SubWrap {
-								lhs: lhs_val,
-								rhs: rhs_val,
-								span: stmt.span,
-							}),
 							ast::AssignOp::Mul => self.inst(block_scope, vuir::Opcode::Mul {
 								lhs: lhs_val,
 								rhs: rhs_val,
 								span: stmt.span,
 							}),
 							ast::AssignOp::MulSat => self.inst(block_scope, vuir::Opcode::MulSat {
-								lhs: lhs_val,
-								rhs: rhs_val,
-								span: stmt.span,
-							}),
-							ast::AssignOp::MulWrap => self.inst(block_scope, vuir::Opcode::MulWrap {
 								lhs: lhs_val,
 								rhs: rhs_val,
 								span: stmt.span,
