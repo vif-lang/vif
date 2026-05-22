@@ -188,24 +188,28 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Update nightly tag
+      - name: Prepare nightly release metadata
+        id: release-meta
         run: |
-          git tag -f nightly "${GITHUB_SHA}"
-          git push origin refs/tags/nightly --force
+          release_date="$(date -u +'%d-%m-%Y')"
+          echo "date=${release_date}" >> "${GITHUB_OUTPUT}"
+          echo "tag=nightly-${release_date}" >> "${GITHUB_OUTPUT}"
 
-      - name: Delete old nightly release
+      - name: Check nightly release does not exist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release delete nightly -y
+          if gh release view "${{ steps.release-meta.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.release-meta.outputs.tag }} already exists; refusing to overwrite an immutable dated release."
+            exit 1
           fi
 
       - name: Publish nightly release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: nightly
-          name: Nightly
+          tag_name: ${{ steps.release-meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Nightly ${{ steps.release-meta.outputs.date }}
           body: |
             Automated nightly build from `${{ github.sha }}`.
 
@@ -219,4 +223,4 @@ jobs:
       - name: Publish nightly draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit nightly --draft=false --prerelease
+        run: gh release edit "${{ steps.release-meta.outputs.tag }}" --draft=false --prerelease
