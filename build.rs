@@ -92,14 +92,15 @@ fn symlink_or_copy(
 				return;
 			} else {
 				// Otherwise, remove the existing directory to replace it with a symlink.
-				std::fs::remove_dir_all(&dst).expect("Failed to remove existing std directory in output directory");
+				std::fs::remove_dir_all(dst).expect("Failed to remove existing std directory in output directory");
 			}
 		}
 
-		symlink(&src, &dst).expect("Failed to create symlink for std directory in output directory");
+		symlink(src, dst).expect("Failed to create symlink for std directory in output directory");
 	}
 }
 
+#[cfg(windows)]
 fn walk_dir(root: impl AsRef<Path>) -> Result<impl Iterator<Item = PathBuf>, std::io::Error> {
 	let root_path = root.as_ref();
 

@@ -12,6 +12,7 @@ on:
       - "rust-toolchain.toml"
       - "rustfmt.toml"
       - ".cargo/**"
+      - ".config/nextest.toml"
       - ".github/**"
   pull_request:
     paths:
@@ -22,165 +23,165 @@ on:
       - "rust-toolchain.toml"
       - "rustfmt.toml"
       - ".cargo/**"
+      - ".config/nextest.toml"
       - ".github/**"
   schedule:
     - cron: "0 2 * * *" # 02:00 UTC daily
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+permissions:
+  contents: read
 
 env:
-  CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
   CLICOLOR: 1
-  FORCE_COLOR: 1
   CLICOLOR_FORCE: 1
-  # clang+llvm-*-x86_64-pc-windows-msvc.tar.xz is the full developer tarball
-  # from the LLVM project that includes llvm-config.exe, required by llvm-sys.
-  # Bump this when updating inkwell's llvm version feature.
+  FORCE_COLOR: 1
   LLVM_VERSION: "21.1.1"
+  LLVM_APT_VERSION: "21"
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Test on every push / PR / scheduled run
-  # -------------------------------------------------------------------------
-  test:
-    name: Test
-    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.merged == false) || github.event_name != 'pull_request' }}
-    runs-on: windows-latest
+  ci:
+    name: CI / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+          - name: Linux
+            os: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: C:/llvm
-          key: llvm-${{ env.LLVM_VERSION }}-windows-x86_64
-
-      - name: Download and prepare LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
+      - shell: bash
         run: |
-          # Full developer tarball, includes llvm-config.exe and static .lib files
-          $url = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$env:LLVM_VERSION/llvm-$env:LLVM_VERSION-windows-amd64-msvc17-msvcrt.7z"
-          Invoke-WebRequest $url -OutFile "$env:TEMP\llvm.tar.xz" -UseBasicParsing
-          New-Item -ItemType Directory -Force -Path C:\llvm | Out-Null
-          tar -xf "$env:TEMP\llvm.tar.xz" -C C:\llvm --strip-components=1
-          Remove-Item "$env:TEMP\llvm.tar.xz"
+          echo "::add-matcher::.github/rust-code-quality.json"
+          echo "::add-matcher::.github/rust-nextest.json"
 
-      - name: Set LLVM env var prefix
-        shell: bash
-        run: echo "LLVM_SYS_211_PREFIX=C:/llvm" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/install-dependencies
         with:
-          toolchain: nightly-2026-02-22
+          install-nextest: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "true"
 
-      - name: Build (debug)
-        run: cargo build
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # - name: Clippy
+      #   run: cargo clippy --workspace --all-targets --all-features --locked -- -Dwarnings
 
       - name: Test
-        run: cargo test
+        run: cargo nextest run --workspace --all-features --locked --profile ci
 
-  # -------------------------------------------------------------------------
-  # Build artifacts (nightly schedule only)
-  # -------------------------------------------------------------------------
+      - name: Upload nextest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-${{ matrix.name }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
   nightly-build:
-    name: Nightly Build
-    if: github.event_name == 'schedule'
-    needs: test
-    runs-on: windows-latest
+    name: Nightly / ${{ matrix.name }}
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs:
+      - ci
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+          - name: Linux
+            os: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: C:/llvm
-          key: llvm-${{ env.LLVM_VERSION }}-windows-x86_64
-
-      - name: Download and prepare LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          # Full developer tarball, includes llvm-config.exe and static .lib files
-          $url = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$env:LLVM_VERSION/llvm-$env:LLVM_VERSION-windows-amd64-msvc17-msvcrt.7z"
-          Invoke-WebRequest $url -OutFile "$env:TEMP\llvm.tar.xz" -UseBasicParsing
-          New-Item -ItemType Directory -Force -Path C:\llvm | Out-Null
-          tar -xf "$env:TEMP\llvm.tar.xz" -C C:\llvm --strip-components=1
-          Remove-Item "$env:TEMP\llvm.tar.xz"
-
-      - name: Set LLVM env var prefix
-        shell: bash
-        run: echo "LLVM_SYS_211_PREFIX=C:/llvm" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-02-22
+      - uses: ./.github/actions/install-dependencies
 
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "true"
 
-      - name: Build (debug)
-        run: cargo build
-
-      - name: Stage debug artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifact\debug | Out-Null
-          Copy-Item target\debug\vifc.exe artifact\debug\
-          Copy-Item target\debug\vifc.pdb artifact\debug\
-          Copy-Item -Recurse std artifact\debug\std
-
-      - name: Upload debug artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vifc-windows-debug
-          path: artifact/debug/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Build (release)
+      - name: Build Windows release
+        if: runner.os == 'Windows'
         env:
           CARGO_PROFILE_RELEASE_DEBUG: "2"
           CARGO_PROFILE_RELEASE_STRIP: "none"
         run: cargo build --release --config .cargo/release.toml
 
-      - name: Stage release artifact
+      - name: Build Unix release
+        if: runner.os != 'Windows'
+        run: cargo build --release --config .cargo/release.toml
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path artifact\release | Out-Null
-          Copy-Item target\release\vifc.exe artifact\release\
-          Copy-Item target\release\vifc.pdb artifact\release\
-          Copy-Item -Recurse std artifact\release\std
+          New-Item -ItemType Directory -Force -Path artifact\package | Out-Null
+          Copy-Item target\release\vifc.exe artifact\package\vifc-windows-x86_64.exe
+          if (Test-Path target\release\vifc.pdb) {
+            Copy-Item target\release\vifc.pdb artifact\package\vifc-windows-x86_64.pdb
+          }
+          Copy-Item -Recurse std artifact\package\std
+          Compress-Archive -Path artifact\package\* -DestinationPath vifc-windows-x86_64.zip -Force
 
-      - name: Upload release artifact
+      - name: Package Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p artifact/vifc-linux-x86_64
+          cp target/release/vifc artifact/vifc-linux-x86_64/vifc-linux-x86_64
+          cp -R std artifact/vifc-linux-x86_64/std
+          tar --zstd -cf vifc-linux-x86_64.tar.zst -C artifact vifc-linux-x86_64
+
+      - name: Package macOS release
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          case "${arch}" in
+            arm64) platform="macos-aarch64" ;;
+            x86_64) platform="macos-x86_64" ;;
+            *) platform="macos-${arch}" ;;
+          esac
+          mkdir -p "artifact/vifc-${platform}"
+          cp target/release/vifc "artifact/vifc-${platform}/vifc-${platform}"
+          cp -R std "artifact/vifc-${platform}/std"
+          tar --zstd -cf "vifc-${platform}.tar.zst" -C artifact "vifc-${platform}"
+
+      - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
-          name: vifc-windows-release
-          path: artifact/release/
+          name: nightly-archive-${{ matrix.name }}
+          path: |
+            vifc-windows-x86_64.zip
+            vifc-linux-x86_64.tar.zst
+            vifc-macos-*.tar.zst
           if-no-files-found: error
           retention-days: 7
 
-  # -------------------------------------------------------------------------
-  # Bundle binary + pdb + std/, publish GitHub release (schedule only)
-  # -------------------------------------------------------------------------
   nightly-publish:
     name: Publish Nightly Release
-    if: github.event_name == 'schedule'
-    needs: nightly-build
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs:
+      - nightly-build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -188,23 +189,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download release artifact
+      - name: Download release archives
         uses: actions/download-artifact@v4
         with:
-          name: vifc-windows-release
-          path: dist/
-
-      # Rename to platform-tagged names then zip everything (exe + pdb + std/)
-      - name: Package release
-        run: |
-          mv dist/vifc.exe dist/vifc-windows-x86_64.exe
-          mv dist/vifc.pdb dist/vifc-windows-x86_64.pdb
-          cd dist && zip -r ../vifc-windows-x86_64.zip .
+          pattern: nightly-archive-*
+          path: dist
+          merge-multiple: true
 
       - name: Update nightly tag
         run: |
-          git tag -f nightly
-          git push origin nightly --force
+          git tag -f nightly "${GITHUB_SHA}"
+          git push origin refs/tags/nightly --force
+
+      - name: Delete old nightly assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release view nightly --json assets --jq '.assets[].name' \
+              | grep -E '^vifc-.*\.(zip|tar\.zst)$' \
+              | while read -r asset; do
+                  gh release delete-asset nightly "${asset}" -y
+                done
+          fi
 
       - name: Publish nightly release
         uses: softprops/action-gh-release@v2
@@ -214,10 +221,8 @@ jobs:
           body: |
             Automated nightly build from `${{ github.sha }}`.
 
-            Extract the zip. It contains:
-            - `vifc-windows-x86_64.exe`: compiler binary
-            - `vifc-windows-x86_64.pdb`: debug symbols
-            - `std/`: standard library sources
+            Archives include the compiler binary and `std/` sources for each supported platform.
           prerelease: true
           make_latest: false
-          files: vifc-windows-x86_64.zip
+          fail_on_unmatched_files: true
+          files: dist/*

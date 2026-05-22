@@ -1,0 +1,90 @@
+name: Install CI dependencies
+description: Install LLVM, Rust, and optional cargo-nextest for CI jobs.
+
+inputs:
+  install-nextest:
+    description: Install cargo-nextest.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euxo pipefail
+        llvm_version="${LLVM_APT_VERSION:-21}"
+        codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+        sudo install -d -m 0755 /etc/apt/keyrings
+        if [ ! -f /etc/apt/keyrings/apt.llvm.org.gpg ]; then
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/apt.llvm.org.gpg
+        fi
+        echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${llvm_version} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          clang-${llvm_version} \
+          libpolly-${llvm_version}-dev \
+          lld-${llvm_version} \
+          llvm-${llvm_version}-dev \
+          pkg-config \
+          zlib1g-dev \
+          zstd
+        echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-${llvm_version}" >> "${GITHUB_ENV}"
+        echo "/usr/lib/llvm-${llvm_version}/bin" >> "${GITHUB_PATH}"
+
+    - name: Cache Windows LLVM
+      if: runner.os == 'Windows'
+      id: cache-llvm
+      uses: actions/cache@v4
+      with:
+        path: C:/llvm
+        key: llvm-${{ env.LLVM_VERSION }}-windows-x86_64
+
+    - name: Install Windows LLVM
+      if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $url = "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-$env:LLVM_VERSION/llvm-$env:LLVM_VERSION-windows-amd64-msvc17-msvcrt.7z"
+        Invoke-WebRequest $url -OutFile "$env:TEMP\llvm.7z" -UseBasicParsing
+        New-Item -ItemType Directory -Force -Path C:\llvm | Out-Null
+        7z x "$env:TEMP\llvm.7z" "-oC:\llvm" -y
+        $nested = Get-ChildItem C:\llvm | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+        if ($nested -and (Test-Path (Join-Path $nested.FullName "bin\llvm-config.exe"))) {
+          Get-ChildItem $nested.FullName | Move-Item -Destination C:\llvm -Force
+          Remove-Item $nested.FullName -Recurse -Force
+        }
+        Remove-Item "$env:TEMP\llvm.7z"
+
+    - name: Configure Windows LLVM
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "LLVM_SYS_211_PREFIX=C:/llvm" >> "${GITHUB_ENV}"
+
+    - name: Install macOS dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew update
+        brew install llvm@21 zstd
+        echo "LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)" >> "${GITHUB_ENV}"
+        echo "$(brew --prefix llvm@21)/bin" >> "${GITHUB_PATH}"
+
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        set -euxo pipefail
+        toolchain="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+        test -n "${toolchain}"
+        rustup toolchain install "${toolchain}" --profile minimal
+        rustup default "${toolchain}"
+        components="$(sed -n 's/^components[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' rust-toolchain.toml | tr -d "'\" " | tr "," " ")"
+        for component in ${components}; do
+          rustup component add --toolchain "${toolchain}" "${component}"
+        done
+
+    - name: Install cargo-nextest
+      if: inputs.install-nextest == 'true'
+      uses: taiki-e/install-action@nextest

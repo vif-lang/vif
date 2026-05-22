@@ -1,0 +1,5 @@
+[profile.ci]
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "target/nextest/ci/junit.xml"

@@ -1,0 +1,17 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "nextest",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(?:\\x1b\\[[\\d;]+m)*thread '[^']*' panicked at (.*):(\\d+):(\\d+):(?:\\x1b\\[[\\d;]+m)*\\n(?:\\x1b\\[[\\d;]+m)*([^\\x1b]*)(?:\\x1b\\[[\\d;]+m)*$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      ]
+    }
+  ]
+}
