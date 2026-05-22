@@ -127,8 +127,7 @@ pub struct Diagnostic {
 	pub severity: Severity,
 	pub message: String,
 	pub code: Option<String>,
-	pub primary_labels: Vec<Label>,
-	pub secondary_labels: Vec<Label>,
+	pub labels: Vec<Label>,
 	pub notes: Vec<String>,
 	#[cfg(all(not(test), debug_assertions))]
 	pub location: &'static std::panic::Location<'static>,
@@ -142,8 +141,7 @@ impl Diagnostic {
 			severity,
 			message: String::new(),
 			code: None,
-			primary_labels: Vec::new(),
-			secondary_labels: Vec::new(),
+			labels: Vec::new(),
 			notes: vec![],
 			#[cfg(all(not(test), debug_assertions))]
 			location: std::panic::Location::caller(),
@@ -185,7 +183,7 @@ impl Diagnostic {
 		mut self,
 		label: Label,
 	) -> Self {
-		self.primary_labels.sorted_insert_by(label, |a, b| a.span.le(&b.span));
+		self.labels.sorted_insert_by(label, |a, b| a.span.le(&b.span));
 		self
 	}
 
@@ -411,13 +409,7 @@ impl<'a> DiagnosticWriter<'a> {
 	pub fn write(mut self) -> std::io::Result<()> {
 		self.write_header()?;
 
-		let mut sorted_labels: Vec<&Label> = self
-			.diagnostic
-			.primary_labels
-			.iter()
-			.chain(self.diagnostic.secondary_labels.iter())
-			.filter(|label| label.span.is_some())
-			.collect();
+		let mut sorted_labels: Vec<&Label> = self.diagnostic.labels.iter().filter(|label| label.span.is_some()).collect();
 		sorted_labels.sort_by(|a, b| cmp_labels_for_render(a, b));
 
 		if sorted_labels.is_empty() {

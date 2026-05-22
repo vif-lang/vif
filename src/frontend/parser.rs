@@ -3312,7 +3312,7 @@ impl Parser {
 		diag: Diagnostic,
 	) {
 		self.errors
-			.sorted_insert_by(diag, |a, b| match (a.primary_labels.first(), b.primary_labels.first()) {
+			.sorted_insert_by(diag, |a, b| match (a.labels.first(), b.labels.first()) {
 				(Some(a), Some(b)) => a.span.le(&b.span),
 				(None, Some(_)) => false,
 				_ => true,
