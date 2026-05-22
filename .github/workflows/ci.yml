@@ -193,16 +193,12 @@ jobs:
           git tag -f nightly "${GITHUB_SHA}"
           git push origin refs/tags/nightly --force
 
-      - name: Delete old nightly assets
+      - name: Delete old nightly release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view nightly >/dev/null 2>&1; then
-            gh release view nightly --json assets --jq '.assets[].name' \
-              | grep -E '^vifc-.*\.(zip|tar\.zst)$' \
-              | while read -r asset; do
-                  gh release delete-asset nightly "${asset}" -y
-                done
+            gh release delete nightly -y
           fi
 
       - name: Publish nightly release
@@ -214,7 +210,13 @@ jobs:
             Automated nightly build from `${{ github.sha }}`.
 
             Archives include the compiler binary and `std/` sources for each supported platform.
+          draft: true
           prerelease: true
           make_latest: false
           fail_on_unmatched_files: true
           files: dist/*
+
+      - name: Publish nightly draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit nightly --draft=false --prerelease
