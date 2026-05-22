@@ -532,6 +532,7 @@ tokens! {
 	@keyword KwUndefined = "undefined",
 	@keyword KwUnreachable = "unreachable",
 
+	Invalid = "invalid token",
 	Eof = "EOF",
 }
 
@@ -546,6 +547,11 @@ impl Token {
 	#[inline(always)]
 	pub const fn is_eof(&self) -> bool {
 		unlikely(matches!(self.kind, TokenKind::Eof))
+	}
+
+	#[inline(always)]
+	pub const fn is_invalid(&self) -> bool {
+		unlikely(matches!(self.kind, TokenKind::Invalid))
 	}
 }
 
@@ -691,6 +697,7 @@ impl<'src> Lexer<'src> {
 
 		let mut state = S0;
 		let mut kind = TokenKind::Eof;
+		let mut seen_digit = false;
 
 		#[loop_match]
 		'lexer: loop {
@@ -843,6 +850,7 @@ impl<'src> Lexer<'src> {
 								break 'state Str;
 							},
 							b'0' => {
+								seen_digit = true;
 								#[const_continue]
 								break 'state IntZero;
 							},
@@ -857,14 +865,14 @@ impl<'src> Lexer<'src> {
 									break 'state Ident;
 								},
 								class if class & char_class::DIGIT != 0 => {
+									seen_digit = true;
 									#[const_continue]
 									break 'state IntDec;
 								},
 								chr => {
 									self.diag_unexpected_character(chr);
-									kind = TokenKind::Eof;
-									#[const_continue]
-									break 'state S0;
+									kind = TokenKind::Invalid;
+									break 'lexer;
 								},
 							},
 						}
@@ -1113,9 +1121,11 @@ impl<'src> Lexer<'src> {
 						},
 						chr => {
 							self.diag_unexpected_character(chr);
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							if chr == EOF {
+								self.offset = self.len;
+							}
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 					},
 					Dollar => match self.bump() {
@@ -1130,9 +1140,11 @@ impl<'src> Lexer<'src> {
 						},
 						chr => {
 							self.diag_unexpected_character(chr);
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							if chr == EOF {
+								self.offset = self.len;
+							}
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 					},
 					Lt => match self.bump() {
@@ -1260,6 +1272,7 @@ impl<'src> Lexer<'src> {
 							break 'lexer;
 						},
 						chr if char_class::is_digit(chr) => {
+							seen_digit = true;
 							#[const_continue]
 							break 'state FloatDot2;
 						},
@@ -1454,9 +1467,8 @@ impl<'src> Lexer<'src> {
 
 									if unlikely(bits == 0 || bits > u16::MAX as u64) {
 										self.diag_invalid_integer_bit_width();
-										kind = TokenKind::Eof;
-										#[const_continue]
-										break 'state S0;
+										kind = TokenKind::Invalid;
+										break 'lexer;
 									}
 
 									match prefix {
@@ -1478,15 +1490,16 @@ impl<'src> Lexer<'src> {
 					Str => match self.bump() {
 						EOF => {
 							self.diag_unexpected_eof();
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							self.offset = self.len;
+							self.recover_invalid_string();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 						b'\n' => {
 							self.diag_unexpected_character(b'\n');
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							self.scratch_pad.clear();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 						b'"' => {
 							match &mut kind {
@@ -1519,9 +1532,10 @@ impl<'src> Lexer<'src> {
 						match self.bump() {
 							EOF => {
 								self.diag_unexpected_eof();
-								kind = TokenKind::Eof;
-								#[const_continue]
-								break 'state S0;
+								self.offset = self.len;
+								self.recover_invalid_string();
+								kind = TokenKind::Invalid;
+								break 'lexer;
 							},
 							b'n' => self.scratch_pad.push(b'\n'),
 							b'r' => self.scratch_pad.push(b'\r'),
@@ -1531,6 +1545,15 @@ impl<'src> Lexer<'src> {
 							b'0' => self.scratch_pad.push(b'\0'),
 							b'x' => {
 								let hi = self.bump();
+
+								if unlikely(hi == EOF) {
+									self.diag_invalid_escape_sequence();
+									self.offset = self.len;
+									self.recover_invalid_string();
+									kind = TokenKind::Invalid;
+									break 'lexer;
+								}
+
 								let lo = self.bump();
 
 								if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() {
@@ -1538,27 +1561,40 @@ impl<'src> Lexer<'src> {
 									self.scratch_pad.push(byte);
 								} else {
 									self.diag_invalid_escape_sequence();
-									kind = TokenKind::Eof;
-									#[const_continue]
-									break 'state S0;
+									if lo == EOF {
+										self.offset = self.len;
+									} else if matches!(hi, b'\n' | b'\r') {
+										self.offset -= 2;
+									} else if matches!(lo, b'\n' | b'\r') {
+										self.offset -= 1;
+									}
+									self.recover_invalid_string();
+									kind = TokenKind::Invalid;
+									break 'lexer;
 								}
 							},
 							b'u' => {
 								if self.bump() != b'{' {
 									self.diag_invalid_unicode_escape();
-									kind = TokenKind::Eof;
-									#[const_continue]
-									break 'state S0;
+									if self.offset > self.len {
+										self.offset = self.len;
+									} else if matches!(self.bytes[self.offset - 1], b'\n' | b'\r') {
+										self.offset -= 1;
+									}
+									self.recover_invalid_string();
+									kind = TokenKind::Invalid;
+									break 'lexer;
 								}
 
 								let mut codepoint: u32 = 0;
+								let start_offset = self.offset;
 
 								while self.peek() != b'}' {
 									if unlikely(self.is_eof()) {
 										self.diag_unexpected_eof();
-										kind = TokenKind::Eof;
-										#[const_continue]
-										break 'state S0;
+										self.recover_invalid_string();
+										kind = TokenKind::Invalid;
+										break 'lexer;
 									}
 
 									let digit = self.bump();
@@ -1567,21 +1603,32 @@ impl<'src> Lexer<'src> {
 										codepoint = (codepoint << 4) | (hex_value(digit) as u32);
 									} else {
 										self.diag_invalid_unicode_escape();
-										kind = TokenKind::Eof;
-										#[const_continue]
-										break 'state S0;
+										if matches!(digit, b'\n' | b'\r') {
+											self.offset -= 1;
+										}
+										self.recover_invalid_string();
+										kind = TokenKind::Invalid;
+										break 'lexer;
 									}
 								}
 
+								let digit_count = self.offset - start_offset;
 								self.offset += 1; // consume the closing '}'
+
+								if digit_count > 6 {
+									self.diag_invalid_unicode_escape();
+									self.recover_invalid_string();
+									kind = TokenKind::Invalid;
+									break 'lexer;
+								}
 
 								let chr = match core::char::from_u32(codepoint) {
 									Some(c) => c,
 									None => {
 										self.diag_invalid_unicode_escape();
-										kind = TokenKind::Eof;
-										#[const_continue]
-										break 'state S0;
+										self.recover_invalid_string();
+										kind = TokenKind::Invalid;
+										break 'lexer;
 									},
 								};
 
@@ -1591,9 +1638,12 @@ impl<'src> Lexer<'src> {
 							},
 							_ => {
 								self.diag_invalid_escape_sequence();
-								kind = TokenKind::Eof;
-								#[const_continue]
-								break 'state S0;
+								if matches!(self.bytes[self.offset - 1], b'\n' | b'\r') {
+									self.offset -= 1;
+								}
+								self.recover_invalid_string();
+								kind = TokenKind::Invalid;
+								break 'lexer;
 							},
 						}
 
@@ -1602,22 +1652,27 @@ impl<'src> Lexer<'src> {
 					},
 					IntZero => match self.bump() {
 						b'b' => {
+							seen_digit = false;
 							#[const_continue]
 							break 'state IntBin;
 						},
 						b'o' => {
+							seen_digit = false;
 							#[const_continue]
 							break 'state IntOct;
 						},
 						b'x' => {
+							seen_digit = false;
 							#[const_continue]
 							break 'state IntHex;
 						},
 						b'.' => {
+							seen_digit = false;
 							#[const_continue]
 							break 'state FloatDot1;
 						},
 						b'e' | b'E' => {
+							seen_digit = false;
 							#[const_continue]
 							break 'state FloatExp1;
 						},
@@ -1637,7 +1692,16 @@ impl<'src> Lexer<'src> {
 					},
 					IntBin => {
 						while likely(char_class::is_bin_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
+						}
+
+						if unlikely(!seen_digit) {
+							self.diag_invalid_integer_literal();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						}
 
 						kind = TokenKind::LitInt {
@@ -1648,7 +1712,16 @@ impl<'src> Lexer<'src> {
 					},
 					IntOct => {
 						while likely(char_class::is_oct_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
+						}
+
+						if unlikely(!seen_digit) {
+							self.diag_invalid_integer_literal();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						}
 
 						kind = TokenKind::LitInt {
@@ -1659,7 +1732,16 @@ impl<'src> Lexer<'src> {
 					},
 					IntHex => {
 						while likely(char_class::is_hex_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
+						}
+
+						if unlikely(!seen_digit) {
+							self.diag_invalid_integer_literal();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						}
 
 						kind = TokenKind::LitInt {
@@ -1670,17 +1752,22 @@ impl<'src> Lexer<'src> {
 					},
 					IntDec => {
 						while likely(char_class::is_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
 						}
 
 						match self.peek() {
 							b'.' => {
 								self.offset += 1;
+								seen_digit = false;
 								#[const_continue]
 								break 'state FloatDot1;
 							},
 							b'e' | b'E' => {
 								self.offset += 1;
+								seen_digit = false;
 								#[const_continue]
 								break 'state FloatExp1;
 							},
@@ -1707,9 +1794,8 @@ impl<'src> Lexer<'src> {
 					FloatDot1 => match self.bump() {
 						b'e' | b'E' => {
 							self.diag_invalid_float_literal();
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 						chr if char_class::is_digit(chr) => {
 							#[const_continue]
@@ -1734,12 +1820,16 @@ impl<'src> Lexer<'src> {
 					},
 					FloatDot2 => {
 						while likely(char_class::is_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
 						}
 
 						match self.peek() {
 							b'e' | b'E' => {
 								self.offset += 1;
+								seen_digit = false;
 								kind = TokenKind::LitFloat {
 									symbol: COMMON_INTERNS.empty_str,
 								};
@@ -1754,22 +1844,40 @@ impl<'src> Lexer<'src> {
 						}
 					},
 					FloatExp1 => match self.peek() {
-						chr if char_class::is_digit_or_sign(chr) => {
+						b'+' | b'-' => {
 							self.offset += 1;
+							#[const_continue]
+							break 'state FloatExp2;
+						},
+						chr if char_class::is_digit(chr) => {
+							self.offset += 1;
+							seen_digit = true;
 
+							#[const_continue]
+							break 'state FloatExp2;
+						},
+						b'_' => {
 							#[const_continue]
 							break 'state FloatExp2;
 						},
 						_ => {
 							self.diag_invalid_float_literal();
-							kind = TokenKind::Eof;
-							#[const_continue]
-							break 'state S0;
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						},
 					},
 					FloatExp2 => {
 						while likely(char_class::is_digit_or_uscore(self.peek())) {
+							if self.peek() != b'_' {
+								seen_digit = true;
+							}
 							self.offset += 1;
+						}
+
+						if unlikely(!seen_digit) {
+							self.diag_invalid_float_literal();
+							kind = TokenKind::Invalid;
+							break 'lexer;
 						}
 
 						let symbol = intern_str(&self.bytes[self.span_start..self.offset]);
@@ -1846,6 +1954,25 @@ impl<'src> Lexer<'src> {
 		}
 	}
 
+	fn recover_invalid_string(&mut self) {
+		self.scratch_pad.clear();
+
+		if unlikely(self.offset >= self.len) {
+			self.offset = self.len;
+			return;
+		}
+
+		if let Some(offset) = memx::memchr_tpl(&self.bytes[self.offset..], b'"', b'\n', b'\r') {
+			self.offset += offset;
+
+			if self.bytes[self.offset] == b'"' {
+				self.offset += 1;
+			}
+		} else {
+			self.offset = self.len;
+		}
+	}
+
 	#[inline(always)]
 	fn span(&self) -> Span {
 		Span::new(self.span_start..self.offset)
@@ -1900,6 +2027,15 @@ impl<'src> Lexer<'src> {
 	}
 
 	#[cold]
+	fn diag_invalid_integer_literal(&mut self) {
+		self.errors.push(
+			Diagnostic::error()
+				.with_message("invalid integer literal")
+				.with_label(Label::primary().with_span(self.diag_span(self.span()))),
+		);
+	}
+
+	#[cold]
 	fn diag_invalid_integer_bit_width(&mut self) {
 		self.errors.push(
 			Diagnostic::error()
@@ -1931,5 +2067,145 @@ fn hex_value(chr: u8) -> u8 {
 		b'A'..=b'F' => chr - b'A' + 10,
 		// SAFETY: we already checked the character is a hex digit
 		_ => unsafe { unreachable_unchecked() },
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn lexer_error_messages(source: &str) -> Vec<String> {
+		let source = format!("{source}\0");
+		let mut lexer = Lexer::new(&source, ModuleId::from(0));
+
+		loop {
+			if lexer.next().is_eof() {
+				break;
+			}
+		}
+
+		lexer.take_errors().into_iter().map(|diagnostic| diagnostic.message).collect()
+	}
+
+	fn lexer_token_tags(source: &str) -> Vec<TokenTag> {
+		let source = format!("{source}\0");
+		let mut lexer = Lexer::new(&source, ModuleId::from(0));
+		let mut tags = Vec::new();
+
+		loop {
+			let token = lexer.next();
+			tags.push(token.kind.tag());
+
+			if token.is_eof() {
+				break;
+			}
+		}
+
+		tags
+	}
+
+	#[test]
+	fn rejects_invalid_integer_literal_digit_separators() {
+		for source in ["0b", "0x", "0o", "0b_", "0x_"] {
+			assert_eq!(lexer_error_messages(source), ["invalid integer literal"], "{source}");
+		}
+	}
+
+	#[test]
+	fn invalid_integer_literals_emit_invalid_token_before_eof() {
+		assert_eq!(lexer_token_tags("0x const value = 1"), [
+			TokenTag::Invalid,
+			TokenTag::KwConst,
+			TokenTag::Ident,
+			TokenTag::Eq,
+			TokenTag::LitInt,
+			TokenTag::Eof,
+		],);
+	}
+
+	#[test]
+	fn accepts_valid_integer_literal_digit_separators() {
+		for source in ["0b1010", "0o755", "1_234", "123_", "1__2", "0x_dead_beef"] {
+			assert!(lexer_error_messages(source).is_empty(), "{source}");
+		}
+	}
+
+	#[test]
+	fn rejects_invalid_float_literal_exponents() {
+		for source in ["1e+", "1e-", "1e_"] {
+			assert_eq!(lexer_error_messages(source), ["invalid float literal"], "{source}");
+		}
+	}
+
+	#[test]
+	fn invalid_float_literals_emit_invalid_token_before_eof() {
+		assert_eq!(lexer_token_tags("1e+ const value = 1"), [
+			TokenTag::Invalid,
+			TokenTag::KwConst,
+			TokenTag::Ident,
+			TokenTag::Eq,
+			TokenTag::LitInt,
+			TokenTag::Eof,
+		],);
+	}
+
+	#[test]
+	fn accepts_potentially_valid_float_literal_exponents() {
+		for source in ["1e_10", "1e1_", "1e1__0"] {
+			assert!(lexer_error_messages(source).is_empty(), "{source}");
+		}
+	}
+
+	#[test]
+	fn invalid_string_escape_recovers_to_following_token() {
+		assert_eq!(lexer_token_tags("\"bad \\q escape\" const value = 1"), [
+			TokenTag::Invalid,
+			TokenTag::KwConst,
+			TokenTag::Ident,
+			TokenTag::Eq,
+			TokenTag::LitInt,
+			TokenTag::Eof,
+		],);
+		assert_eq!(lexer_error_messages("\"bad \\q escape\" const value = 1"), [
+			"invalid escape sequence"
+		]);
+	}
+
+	#[test]
+	fn invalid_unicode_escape_recovers_to_following_token() {
+		assert_eq!(lexer_token_tags("\"bad \\u{zz}\" const value = 1"), [
+			TokenTag::Invalid,
+			TokenTag::KwConst,
+			TokenTag::Ident,
+			TokenTag::Eq,
+			TokenTag::LitInt,
+			TokenTag::Eof,
+		],);
+		assert_eq!(lexer_error_messages("\"bad \\u{zz}\" const value = 1"), ["invalid unicode escape"]);
+	}
+
+	#[test]
+	fn accepts_six_digit_unicode_escape() {
+		assert!(lexer_error_messages("\"\\u{10FFFF}\"").is_empty());
+		assert_eq!(lexer_token_tags("\"\\u{10FFFF}\""), [TokenTag::LitStr, TokenTag::Eof]);
+	}
+
+	#[test]
+	fn unexpected_newline_in_string_recovers_to_next_line() {
+		assert_eq!(lexer_token_tags("\"bad\nconst value = 1"), [
+			TokenTag::Invalid,
+			TokenTag::KwConst,
+			TokenTag::Ident,
+			TokenTag::Eq,
+			TokenTag::LitInt,
+			TokenTag::Eof,
+		],);
+		assert_eq!(lexer_error_messages("\"bad\nconst value = 1"), ["unexpected character '\n'"]);
+	}
+
+	#[test]
+	fn unexpected_eof_in_string_emits_invalid_before_eof() {
+		assert_eq!(lexer_token_tags("\"bad"), [TokenTag::Invalid, TokenTag::Eof]);
+		assert_eq!(lexer_error_messages("\"bad"), ["unexpected end of file"]);
 	}
 }

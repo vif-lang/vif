@@ -164,7 +164,9 @@ impl Parser {
 			let token = lexer.next();
 			let is_eof = token.is_eof();
 
-			tokens.push(token);
+			if likely(!token.is_invalid()) {
+				tokens.push(token);
+			}
 
 			if unlikely(is_eof) {
 				break;
