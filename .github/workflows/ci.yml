@@ -61,7 +61,7 @@ jobs:
             os: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - shell: bash
         run: |
@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload nextest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextest-${{ matrix.name }}
           path: target/nextest/ci/junit.xml
@@ -111,7 +111,7 @@ jobs:
             os: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/install-dependencies
 
@@ -159,7 +159,7 @@ jobs:
           tar --zstd -cf "vifc-${platform}.tar.zst" -C artifact "vifc-${platform}"
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-archive-${{ matrix.name }}
           path: |
@@ -179,10 +179,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download release archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: nightly-archive-*
           path: dist
@@ -205,7 +205,7 @@ jobs:
           fi
 
       - name: Publish nightly release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release-meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
