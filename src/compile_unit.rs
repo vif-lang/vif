@@ -350,6 +350,14 @@ impl<'ctx> CodegenLowerer<'ctx> {
 }
 
 impl CompilationUnit {
+	#[inline]
+	pub fn is_std_rt_module(
+		&self,
+		module: ModuleId,
+	) -> bool {
+		module == self.std_rt_module
+	}
+
 	pub fn new(
 		build_args: &'static Build,
 		cwd: PathBuf,

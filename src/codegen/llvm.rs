@@ -1763,7 +1763,7 @@ impl<'ctx> Lowerer<'ctx> {
 		&mut self,
 		decl: DeclId,
 	) -> AnyValueEnum<'ctx> {
-		let (fn_ty_idx, name) = self.compilation_unit.decls.with_mut(|decls| {
+		let (fn_ty_idx, name, module) = self.compilation_unit.decls.with_mut(|decls| {
 			let decl = &decls[decl];
 			let ty = match &decl.analysis_state {
 				DeclAnalysisState::TypeKnown(ty) => *ty,
@@ -1773,7 +1773,7 @@ impl<'ctx> Lowerer<'ctx> {
 				},
 			};
 
-			(ty, decl.name)
+			(ty, decl.name, decl.module)
 		});
 
 		let fn_ty = self.compilation_unit.values.index_to_key(fn_ty_idx).as_type_fn();
@@ -1792,9 +1792,14 @@ impl<'ctx> Lowerer<'ctx> {
 
 		// TODO(zino): handle extern declarations more explicitly.
 		let is_main = &*name == "main";
+		let is_runtime_main = is_main && self.compilation_unit.is_std_rt_module(module);
 
 		// TODO(ldubos): generate a stable unique name for generic function instantiations.
-		let mangled_name: String = name.to_string();
+		let mangled_name: String = if is_main && !is_runtime_main {
+			format!("__vif_mod{}_main", usize::from(module))
+		} else {
+			name.to_string()
+		};
 
 		let llvm_fn_value = if fn_ty.external {
 			if let Some(existing) = self.module.get_function(&mangled_name) {
@@ -1813,7 +1818,11 @@ impl<'ctx> Lowerer<'ctx> {
 			self.module.add_function(
 				&mangled_name,
 				ty,
-				if is_main { Some(Linkage::External) } else { Some(Linkage::Private) },
+				if is_runtime_main {
+					Some(Linkage::External)
+				} else {
+					Some(Linkage::Private)
+				},
 			)
 		};
 

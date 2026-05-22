@@ -309,6 +309,16 @@ fn build(
 				.output()
 		}
 
+		#[cfg(target_os = "linux")]
+		fn link_linux(
+			out_exe_path: &Path,
+			obj_path: &Path,
+		) -> std::io::Result<Output> {
+			std::process::Command::new("cc")
+				.args(["-o", &out_exe_path.to_string_lossy(), obj_path.to_string_lossy().as_ref()])
+				.output()
+		}
+
 		let output = {
 			cfg_if! {
 				if #[cfg(target_os = "windows")] {
@@ -321,6 +331,8 @@ fn build(
 					)
 				} else if #[cfg(target_os = "macos")] {
 					link_macos(&out_exe_path, &obj_path)
+				} else if #[cfg(target_os = "linux")] {
+					link_linux(&out_exe_path, &obj_path)
 				} else {
 					unreachable!("unsupported target_os")
 				}
