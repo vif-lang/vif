@@ -945,11 +945,10 @@ impl<'src> Lexer<'src> {
 							break 'lexer;
 						},
 					},
-					StarStar => match self.bump() {
-						_ => {
-							self.offset -= 1;
-							break 'lexer;
-						},
+					StarStar => {
+						self.bump();
+						self.offset -= 1;
+						break 'lexer;
 					},
 					Slash => match self.bump() {
 						b'=' => {

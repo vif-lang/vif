@@ -49,6 +49,7 @@ where
 		&mut self,
 		indices: [I; N],
 	) -> [&mut <usize as SliceIndex<[T]>>::Output; N] {
+		// SAFETY: The caller guarantees that the indices are in bounds and distinct.
 		unsafe { self.vec.get_disjoint_unchecked_mut(indices.map(|i| i.into())) }
 	}
 

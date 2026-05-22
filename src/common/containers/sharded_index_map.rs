@@ -43,7 +43,7 @@ pub use entry::*;
 #[repr(transparent)]
 pub struct Index(u32);
 impl Index {
-	pub const NONE: Index = unsafe { Index(u32::MAX) };
+	pub const NONE: Index = Index(u32::MAX);
 
 	const SHARD_BITS: u32 = 6;
 	const SHARD_SHIFT: u32 = 32 - Self::SHARD_BITS;
@@ -92,6 +92,7 @@ impl From<usize> for ShardLocalIndex {
 		Self(value as u32)
 	}
 }
+
 impl From<ShardLocalIndex> for usize {
 	fn from(val: ShardLocalIndex) -> Self {
 		val.0 as _
@@ -122,6 +123,7 @@ where
 	shards: Vec<Shard<K, V>>,
 	build_hasher: H,
 }
+
 impl<K, V, H> ShardedIndexMap<K, V, H>
 where
 	K: Hash + PartialEq + Copy,
@@ -145,6 +147,7 @@ where
 		}
 	}
 }
+
 impl<K, V, H> ShardedIndexMap<K, V, H>
 where
 	K: Hash + PartialEq + Copy,
@@ -350,6 +353,7 @@ mod tests {
 	fn insert_and_get_key() {
 		let map = new_map::<&'static str, u32>(4);
 		let idx = map.insert("hello", 1).0;
+		// SAFETY: `idx` was returned by this map and still points to the inserted key.
 		let k = unsafe { map.key_unchecked(idx) };
 		assert_eq!(k, &"hello");
 	}
@@ -402,6 +406,7 @@ mod tests {
 		// Second pass: same keys must return same indices and correct keys.
 		for i in 0..1_000u64 {
 			let idx = map.insert(i, 0xdead).0;
+			// SAFETY: `idx` was returned by this map during the same iteration.
 			let k = unsafe { map.key_unchecked(idx) };
 			assert_eq!(*k, i);
 		}
@@ -418,6 +423,7 @@ mod tests {
 		}
 		for i in 0..100u32 {
 			let idx = map.insert(i, 0).0;
+			// SAFETY: `idx` was returned by this map during the same iteration.
 			let k = unsafe { map.key_unchecked(idx) };
 			assert_eq!(*k, i);
 		}
@@ -456,6 +462,7 @@ mod tests {
 				thread::spawn(move || {
 					for i in 0..256u64 {
 						let idx = map.insert(i, i).0;
+						// SAFETY: `idx` was returned by this map during the same iteration.
 						let k = unsafe { map.key_unchecked(idx) };
 						assert_eq!(*k, i);
 					}

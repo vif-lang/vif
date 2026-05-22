@@ -329,12 +329,11 @@ impl<'ctx> CodegenLowerer<'ctx> {
 		fun: value::Index,
 		vtir: &ir::vtir::Vtir,
 		build_opts: &Build,
-	) -> Result<(), ()> {
+	) {
 		match self {
 			#[cfg(feature = "llvm")]
 			Self::Llvm(lowerer) => {
 				lowerer.lower_function(compilation_unit, fun, vtir, build_opts);
-				Ok(())
 			},
 		}
 	}
@@ -345,7 +344,7 @@ impl<'ctx> CodegenLowerer<'ctx> {
 	) -> Result<Vec<u8>, ()> {
 		match self {
 			#[cfg(feature = "llvm")]
-			Self::Llvm(lowerer) => lowerer.finish(build_opts).map(|obj| obj.as_slice().to_vec()).map_err(|_| ()),
+			Self::Llvm(lowerer) => lowerer.finish(build_opts).map(|obj| obj.as_slice().to_vec()).map_err(|_err| ()),
 		}
 	}
 }
@@ -496,9 +495,7 @@ pub const target: Target = Target {{
 			// prioritize codegen tasks
 			while let Some((fun, vtir)) = self.codegen_tasks.pop() {
 				profiling::scope!("codegen");
-				codegen
-					.lower_function(self.as_ref(), fun, &vtir, self.build_args)
-					.map_err(|_err| BuildError::CodegenError)?;
+				codegen.lower_function(self.as_ref(), fun, &vtir, self.build_args);
 			}
 
 			match rayon::yield_now() {

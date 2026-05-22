@@ -19,7 +19,6 @@ bumpalo        = { version = "3.20", features = ["allocator_api", "boxed", "coll
 bytemuck       = { version = "1.25.0", features = ["derive"] }
 cfg-if         = "1.0"
 crossbeam      = "0.8.4"
-hashbrown      = "0.15.*"                                                                                              # take same version as internment
 hashify        = "0.2"
 inkwell        = { version = "0.8", features = ["llvm21-1", "target-x86"], default-features = false, optional = true }
 internment     = { version = "0.8", features = ["arena"] }
@@ -36,6 +35,9 @@ scopeguard     = "1.2.0"
 sorted-insert  = "0.2"
 target-lexicon = "0.13.5"
 thread_local   = "1.1.9"
+
+# keep in sync with `internment`'s
+hashbrown = "0.15.*"
 
 # windows-only crates
 [target.'cfg(windows)'.dependencies]

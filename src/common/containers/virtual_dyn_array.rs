@@ -43,10 +43,12 @@ where
 
 	_ph: PhantomData<(I, T)>,
 }
+
 // SAFETY: no race condition can happen
 unsafe impl<I, T> Send for VirtMemArenaDynArray<I, T> where I: From<usize> + Into<usize> {}
 // SAFETY: no race condition can happen
 unsafe impl<I, T> Sync for VirtMemArenaDynArray<I, T> where I: From<usize> + Into<usize> {}
+
 impl<I, T> VirtMemArenaDynArray<I, T>
 where
 	I: From<usize> + Into<usize>,
@@ -198,6 +200,7 @@ where
 		unsafe { self.reserved.as_ptr().cast::<T>().add(index) }
 	}
 }
+
 impl<I, T> Drop for VirtMemArenaDynArray<I, T>
 where
 	I: From<usize> + Into<usize>,
@@ -215,6 +218,7 @@ where
 		));
 	}
 }
+
 impl<I, T> Index<I> for VirtMemArenaDynArray<I, T>
 where
 	I: From<usize> + Into<usize>,
@@ -301,6 +305,7 @@ mod tests {
 		}
 
 		for i in 0..N {
+			// SAFETY: The index was initialized by the preceding pushes.
 			let got = unsafe { arena.elem_ptr(i).read() };
 			assert_eq!(got, Big([i as u64; 8]));
 		}
@@ -427,6 +432,7 @@ mod tests {
 						let value = (t * PER_THREAD + i) as u64;
 						let idx = arena.push(value);
 						// Each thread verifies its own write immediately.
+						// SAFETY: `idx` was returned by the push immediately above.
 						let readback = unsafe { arena.elem_ptr(idx.0).read() };
 						assert_eq!(readback, value);
 					}
@@ -436,7 +442,12 @@ mod tests {
 
 		// After join: all TOTAL slots were written; verify none are zero-initialised
 		// collisions by checking the full set of values is present.
-		let mut values: Vec<u64> = (0..TOTAL).map(|i| unsafe { arena.elem_ptr(i).read() }).collect();
+		let mut values: Vec<u64> = (0..TOTAL)
+			.map(|i| {
+				// SAFETY: All indices in this range were initialized by the scoped threads.
+				unsafe { arena.elem_ptr(i).read() }
+			})
+			.collect();
 		values.sort_unstable();
 		values.dedup();
 		assert_eq!(values.len(), TOTAL);
@@ -480,7 +491,9 @@ mod tests {
 		let arena: VirtMemArenaDynArray<Idx, bool> = VirtMemArenaDynArray::with_capacity(8);
 		arena.push(true);
 		arena.push(false);
+		// SAFETY: Indices 0 and 1 were initialized by the pushes above.
 		assert!(unsafe { arena.elem_ptr(0).read() });
+		// SAFETY: Indices 0 and 1 were initialized by the pushes above.
 		assert!(!unsafe { arena.elem_ptr(1).read() });
 	}
 
@@ -488,6 +501,7 @@ mod tests {
 	fn works_with_f64() {
 		let arena: VirtMemArenaDynArray<Idx, f64> = VirtMemArenaDynArray::with_capacity(8);
 		arena.push(std::f64::consts::PI);
+		// SAFETY: Index 0 was initialized by the push above.
 		let v = unsafe { arena.elem_ptr(0).read() };
 		assert!((v - std::f64::consts::PI).abs() < f64::EPSILON);
 	}
@@ -497,7 +511,9 @@ mod tests {
 		let arena: VirtMemArenaDynArray<Idx, (u32, u32)> = VirtMemArenaDynArray::with_capacity(4);
 		arena.push((1, 2));
 		arena.push((3, 4));
+		// SAFETY: Indices 0 and 1 were initialized by the pushes above.
 		assert_eq!(unsafe { arena.elem_ptr(0).read() }, (1, 2));
+		// SAFETY: Indices 0 and 1 were initialized by the pushes above.
 		assert_eq!(unsafe { arena.elem_ptr(1).read() }, (3, 4));
 	}
 }

@@ -691,21 +691,23 @@ impl<T: 'static> ValueStoreBumpRef<T> {
 	#[inline(always)]
 	pub fn as_ref(&self) -> &T {
 		debug_assert!(!self.as_ptr().is_null());
+		// SAFETY: `ValueStoreBumpRef` is only constructed from non-null bump references.
 		unsafe { self.as_ptr().as_ref_unchecked() }
 	}
 }
 impl<T: Copy + 'static> Clone for ValueStoreBumpRef<T> {
 	#[inline(always)]
 	fn clone(&self) -> Self {
-		Self {
-			ptr: self.ptr,
-			_t: PhantomData,
-		}
+		*self
 	}
 }
+
+// SAFETY: `ValueStoreBumpRef` is a transparent wrapper around a non-owning pointer
+// and is constrained to `Copy + 'static` payloads.
 unsafe impl<T: Copy + 'static> bytemuck::Pod for ValueStoreBumpRef<T> {}
 // SAFETY: Rust guarentee that null pointers are the same as zero-initialized pointers
 unsafe impl<T: Copy + 'static> bytemuck::Zeroable for ValueStoreBumpRef<T> {}
+
 impl<T: Copy + 'static> Deref for ValueStoreBumpRef<T> {
 	type Target = T;
 
@@ -713,6 +715,7 @@ impl<T: Copy + 'static> Deref for ValueStoreBumpRef<T> {
 		self.as_ref()
 	}
 }
+
 impl<T: Copy + 'static + Debug> Debug for ValueStoreBumpRef<T> {
 	fn fmt(
 		&self,
@@ -733,6 +736,7 @@ pub enum Value {
 	Enum(ValueStoreBumpRef<TypeEnum>),
 	Union(ValueStoreBumpRef<TypeUnion>),
 }
+
 impl Value {
 	pub fn none() -> Value {
 		Value::None(0)
@@ -1085,6 +1089,7 @@ impl ValueStore {
 	) -> &'static [T] {
 		let bump = self.payload_bump_alloc.lock();
 		let allocated = bump.alloc_slice_copy(slice);
+		// SAFETY: Payload allocations live for the lifetime of the value store.
 		unsafe { &*(allocated as *const [T]) }
 	}
 
@@ -1099,6 +1104,7 @@ impl ValueStore {
 		let len = bitvec.len();
 
 		let bitslice = bitvec::slice::BitSlice::<u8>::from_slice(allocated);
+		// SAFETY: The backing allocation lives for the lifetime of the value store.
 		unsafe { core::mem::transmute(bitslice) }
 	}
 
@@ -1111,6 +1117,7 @@ impl ValueStore {
 	{
 		let bump = self.payload_bump_alloc.lock();
 		let slice = bump.alloc_slice_fill_iter(iter);
+		// SAFETY: Payload allocations live for the lifetime of the value store.
 		unsafe { core::mem::transmute(slice) }
 	}
 
@@ -1120,6 +1127,7 @@ impl ValueStore {
 		val: T,
 	) -> ValueStoreBumpRef<T> {
 		let bump = self.payload_bump_alloc.lock();
+		// SAFETY: The bump allocation is non-null and lives with the value store.
 		unsafe { ValueStoreBumpRef::new(bump.alloc(val)) }
 	}
 
@@ -1341,18 +1349,21 @@ impl Type {
 		self.0
 	}
 }
+
 impl From<Index> for Type {
 	#[inline(always)]
 	fn from(i: Index) -> Self {
 		Type(i)
 	}
 }
+
 impl From<Type> for Index {
 	#[inline(always)]
 	fn from(ty: Type) -> Self {
 		ty.0
 	}
 }
+
 impl Deref for Type {
 	type Target = Index;
 
@@ -1360,6 +1371,7 @@ impl Deref for Type {
 		&self.0
 	}
 }
+
 impl PartialEq<Index> for Type {
 	fn eq(
 		&self,
@@ -1368,6 +1380,7 @@ impl PartialEq<Index> for Type {
 		self.0 == *other
 	}
 }
+
 impl PartialEq<Type> for Index {
 	fn eq(
 		&self,

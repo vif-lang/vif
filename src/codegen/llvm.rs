@@ -1178,6 +1178,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.unwrap()
 					.into_pointer_value();
 				let index = self.resolve_inst(index).into_int_value();
+				// SAFETY: The VTIR slice value carries a pointer to elements of `pointee_ty`,
+				// and `index` is the computed element offset for this instruction.
 				let value = unsafe {
 					self.builder()
 						.build_in_bounds_gep(pointee_ty, src_ptr, &[index], "slice.elem.ptr")?
@@ -1193,7 +1195,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
 				let array_ptr = self.resolve_inst(array_ptr).into_pointer_value();
 				let index = self.resolve_inst(index).into_int_value();
-				let zero = ctx.i32_type().const_zero();
+				// SAFETY: The pointer operand is typed as pointing at `pointee_ty`, and
+				// `index` is the computed element offset for this instruction.
 				let value = unsafe {
 					self.builder()
 						.build_in_bounds_gep(pointee_ty, array_ptr, &[index], "ptr.array.elem.ptr")?

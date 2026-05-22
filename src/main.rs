@@ -357,6 +357,7 @@ TOTAL        ┃ {:>8.2} ms
 }
 
 fn main() -> Result<(), Error> {
+	// SAFETY: Enabling the diagnostic handler is process-global and done once at startup.
 	#[cfg(all(debug_assertions, target_os = "windows", feature = "windows-stackoverflow-backtrace"))]
 	unsafe {
 		w_boson::enable()

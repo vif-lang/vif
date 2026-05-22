@@ -20,6 +20,7 @@ where
 	Occupied(OccupiedEntry<'map, K, V, H>),
 	Vacant(VacantEntry<'map, K, V, H>),
 }
+
 impl<'map, K, V, H> Entry<'map, K, V, H>
 where
 	K: Hash + PartialEq + Copy,
@@ -64,11 +65,13 @@ where
 	pub(super) map: &'map mut IndexMap<K, V, H>,
 	pub(super) index: usize,
 }
+
 impl<'map, K, V, H> OccupiedEntry<'map, K, V, H>
 where
 	K: Hash + PartialEq + Copy,
 	H: BuildHasher,
 {
+	#[allow(clippy::needless_pass_by_value)]
 	pub fn insert(
 		mut self,
 		value: V,
@@ -86,6 +89,7 @@ where
 	pub(super) hash: u64,
 	pub(super) key: &'map K,
 }
+
 impl<'map, K, V, H> VacantEntry<'map, K, V, H>
 where
 	K: Hash + PartialEq + Copy,

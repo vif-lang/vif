@@ -479,6 +479,7 @@ impl<'ast> Lowerer<'ast> {
 
 		let mut traversed_namespace_count = 0;
 
+		// SAFETY: `traverse_scopes_from_mut` yields valid scope ids from `self.scopes`.
 		self.traverse_scopes_from_mut(block_scope, |this, scope| unsafe {
 			match &mut this.scopes[scope] {
 				Scope::LocalValue {
@@ -1628,11 +1629,11 @@ impl<'ast> Lowerer<'ast> {
 						});
 					} else {
 						// Multi-pattern case
-						if case.capture.is_some() {
+						if let Some(capture) = case.capture {
 							self.errors.push(
 								Diagnostic::error()
 									.with_message("captures are not supported on multi-pattern switch cases")
-									.with_label(Label::primary().with_span(self.diag_span(case.capture.unwrap().span))),
+									.with_label(Label::primary().with_span(self.diag_span(capture.span))),
 							);
 						}
 

@@ -412,10 +412,13 @@ impl<'a> Sema<'a> {
 		block: BlockId,
 		opcode: vtir::Opcode,
 	) -> vtir::InstructionRef {
-		assert!(
-			true || !self.blocks[block].comptime,
-			"tried adding a VTIR instruction in a comptime block"
-		);
+		#[allow(clippy::overly_complex_bool_expr)]
+		{
+			assert!(
+				true || !self.blocks[block].comptime,
+				"tried adding a VTIR instruction in a comptime block"
+			);
+		}
 		self.instructions.push(opcode);
 		let inst = vtir::InstructionRef::Instruction(vtir::InstructionId::from_usize(self.instructions.len() - 1));
 		self.blocks[block].instructions.push(inst);
@@ -427,10 +430,13 @@ impl<'a> Sema<'a> {
 		block: BlockId,
 		opcode: vtir::Opcode,
 	) -> vtir::InstructionId {
-		assert!(
-			true || !self.blocks[block].comptime,
-			"tried adding a VTIR instruction in a comptime block"
-		);
+		#[allow(clippy::overly_complex_bool_expr)]
+		{
+			assert!(
+				true || !self.blocks[block].comptime,
+				"tried adding a VTIR instruction in a comptime block"
+			);
+		}
 		self.instructions.push(opcode);
 		let inst = vtir::InstructionId::from_usize(self.instructions.len() - 1);
 		self.blocks[block].instructions.push(vtir::InstructionRef::Instruction(inst));
@@ -4481,7 +4487,6 @@ impl<'a> Sema<'a> {
 	}
 
 	#[track_caller]
-	#[must_use]
 	fn ensure_type_exist_in_runtime(
 		&mut self,
 		ty: &value::Index,
