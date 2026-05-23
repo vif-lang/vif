@@ -127,9 +127,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifact\package | Out-Null
-          Copy-Item target\release\vifc.exe artifact\package\vifc-windows-x86_64.exe
+          Copy-Item target\release\vifc.exe artifact\package\vifc.exe
           if (Test-Path target\release\vifc.pdb) {
-            Copy-Item target\release\vifc.pdb artifact\package\vifc-windows-x86_64.pdb
+            Copy-Item target\release\vifc.pdb artifact\package\vifc.pdb
           }
           Copy-Item -Recurse std artifact\package\std
           Compress-Archive -Path artifact\package\* -DestinationPath vifc-windows-x86_64.zip -Force
@@ -139,7 +139,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifact/vifc-linux-x86_64
-          cp target/release/vifc artifact/vifc-linux-x86_64/vifc-linux-x86_64
+          cp target/release/vifc artifact/vifc-linux-x86_64/vifc
           cp -R std artifact/vifc-linux-x86_64/std
           tar --zstd -cf vifc-linux-x86_64.tar.zst -C artifact vifc-linux-x86_64
 
@@ -154,7 +154,7 @@ jobs:
             *) platform="macos-${arch}" ;;
           esac
           mkdir -p "artifact/vifc-${platform}"
-          cp target/release/vifc "artifact/vifc-${platform}/vifc-${platform}"
+          cp target/release/vifc "artifact/vifc-${platform}/vifc"
           cp -R std "artifact/vifc-${platform}/std"
           tar --zstd -cf "vifc-${platform}.tar.zst" -C artifact "vifc-${platform}"
 
