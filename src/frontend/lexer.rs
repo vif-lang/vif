@@ -490,7 +490,6 @@ tokens! {
 	TyAny = "any",
 	TyAnyint = "anyint",
 	TyAnyfloat = "anyfloat",
-	TyAnyerror = "anyerror",
 	TyType = "type",
 
 	@keyword KwFn = "fn",
@@ -513,7 +512,6 @@ tokens! {
 	@keyword KwDefer = "defer",
 	@keyword KwCatch = "catch",
 	@keyword KwUnion = "union",
-	@keyword KwError = "error",
 	@keyword KwSwitch = "switch",
 	@keyword KwReturn = "return",
 	@keyword KwStruct = "struct",
@@ -1438,7 +1436,6 @@ impl<'src> Lexer<'src> {
 								"defer" => TokenKind::KwDefer,
 								"catch" => TokenKind::KwCatch,
 								"union" => TokenKind::KwUnion,
-								"error" => TokenKind::KwError,
 								"false" => TokenKind::LitBool(false),
 								"usize" => TokenKind::TyUsize,
 								"isize" => TokenKind::TyIsize,
@@ -1453,7 +1450,6 @@ impl<'src> Lexer<'src> {
 								"continue" => TokenKind::KwContinue,
 								"errdefer" => TokenKind::KwErrdefer,
 								"anyfloat" => TokenKind::TyAnyfloat,
-								"anyerror" => TokenKind::TyAnyerror,
 								"undefined" => TokenKind::KwUndefined,
 								"unreachable" => TokenKind::KwUnreachable,
 							}

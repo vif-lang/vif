@@ -787,9 +787,6 @@ impl<'ast> Lowerer<'ast> {
 			ast::Type::Nullable(inner) => {
 				todo!()
 			},
-			ast::Type::ErrorUnion { err_ty, ok_ty } => {
-				todo!()
-			},
 			ast::Type::Fn(fn_sig) => {
 				todo!()
 			},
@@ -797,8 +794,6 @@ impl<'ast> Lowerer<'ast> {
 			ast::Type::Struct(r#struct) => self.lower_struct(block_scope, r#struct, naming).into_ref(),
 			ast::Type::Enum(r#enum) => self.lower_enum(block_scope, r#enum, naming).into_ref(),
 			ast::Type::Union(u) => self.lower_union(block_scope, u, naming).into_ref(),
-			ast::Type::Error(_) => todo!(),
-			ast::Type::Anyerror => todo!(),
 		}
 	}
 

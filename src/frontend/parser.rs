@@ -115,7 +115,6 @@ struct CommonTypes {
 	any_ty: &'static Type,
 	anyint_ty: &'static Type,
 	anyfloat_ty: &'static Type,
-	anyerror_ty: &'static Type,
 	never_ty: &'static Type,
 	f16_ty: &'static Type,
 	f32_ty: &'static Type,
@@ -182,7 +181,6 @@ impl Parser {
 			any_ty: data.push(&Type::Any),
 			anyint_ty: data.push(&Type::Anyint),
 			anyfloat_ty: data.push(&Type::Anyfloat),
-			anyerror_ty: data.push(&Type::Anyerror),
 			never_ty: data.push(&Type::Never),
 			f16_ty: data.push(&Type::Float(FloatSuffix::F16)),
 			f32_ty: data.push(&Type::Float(FloatSuffix::F32)),
@@ -974,34 +972,10 @@ impl Parser {
 
 	#[inline(always)]
 	fn parse_ty_expr(&mut self) -> Result<Option<Expr>, Diagnostic> {
-		let tok = self.peek();
-		let start_span = tok.span;
-
-		let kind = match tok.kind {
+		match self.peek().kind {
 			TokenKind::QuestionMark | TokenKind::Star | TokenKind::StarStar | TokenKind::LBracket => become self.parse_prefixed_ty_expr(),
-			// error union: E!T
-			_ => {
-				let Some(err_ty) = self.parse_suffix_ty_expr()? else {
-					return Ok(None);
-				};
-				if self.eat_if(TokenTag::Bang).is_none() {
-					return Ok(Some(err_ty));
-				}
-
-				let err_ty = self.data.push(&err_ty);
-				let ok_ty = self.expect_ty_expr()?;
-				let ok_ty = self.data.push(&ok_ty);
-
-				ExprKind::Type(self.data.push(&Type::ErrorUnion { err_ty, ok_ty }))
-			},
-		};
-
-		let span = (start_span, self.prev().span).into();
-		Ok(Some(Expr {
-			id: self.next_id(),
-			kind,
-			span,
-		}))
+			_ => become self.parse_suffix_ty_expr(),
+		}
 	}
 
 	fn parse_prefixed_ty_expr(&mut self) -> Result<Option<Expr>, Diagnostic> {
@@ -1528,10 +1502,6 @@ impl Parser {
 			TokenKind::TyAnyfloat => {
 				self.offset += 1;
 				ExprKind::Type(self.common_types.anyfloat_ty)
-			},
-			TokenKind::TyAnyerror => {
-				self.offset += 1;
-				ExprKind::Type(self.common_types.anyerror_ty)
 			},
 			TokenKind::TyType => {
 				self.offset += 1;

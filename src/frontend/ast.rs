@@ -565,18 +565,11 @@ pub enum Type {
 	Fn(&'static FnSig),
 	/// `?T`
 	Nullable(&'static Expr),
-	/// `E!T`
-	ErrorUnion {
-		err_ty: &'static Expr,
-		ok_ty: &'static Expr,
-	},
-
 	Generic,
 
 	Struct(&'static StructTy),
 	Union(&'static UnionTy),
 	Enum(&'static EnumTy),
-	Error(&'static ErrorTy),
 
 	// Builtin scalar
 	Bool,
@@ -588,7 +581,6 @@ pub enum Type {
 	Any,
 	Anyint,
 	Anyfloat,
-	Anyerror,
 	// `!` a.k.a. noreturn
 	Never,
 }
