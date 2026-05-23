@@ -1,10 +1,12 @@
-// TODO(ldubos): add the complete list of infos when tagged `union`s and comptime
-// lands in the compiler
-pub cpu: CPU,
-pub os:  OS,
+cpu:        CPU,
+platform:   Platform,
+family:     PlatformFamily,
+abi:        ABI,
+endianness: Endianness,
+ptr_width:  u16,
 
 pub const CPU = struct {
-	pub arch: Arch,
+	arch: Arch,
 
 	pub const Arch = enum {
 		aarch64,
@@ -68,7 +70,7 @@ pub const CPU = struct {
 	};
 };
 
-pub const OS = enum {
+pub const Platform = enum {
 	freestanding,
 	other,
 
@@ -119,4 +121,29 @@ pub const OS = enum {
 	opencl,
 	opengl,
 	vulkan,
+};
+
+pub const PlatformFamily = enum {
+	windows,
+	posix,
+	wasi,
+	freestanding,
+	gpu,
+	other,
+};
+
+pub const ABI = enum {
+	none,
+	msvc,
+	gnu,
+	musl,
+	android,
+	apple,
+	wasi,
+	other,
+};
+
+pub const Endianness = enum {
+	little,
+	big,
 };

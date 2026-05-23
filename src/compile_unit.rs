@@ -28,7 +28,10 @@ use rustc_hash::{
 	FxBuildHasher,
 	FxHashMap,
 };
-use target_lexicon::Triple;
+use target_lexicon::{
+	Endianness as TargetEndianness,
+	Triple,
+};
 
 use crate::{
 	Args,
@@ -193,7 +196,10 @@ pub struct DeferredEffectCheck {
 pub struct ResolvedTargetInfo {
 	pub triple: Triple,
 	pub builtin_arch_tag: &'static str,
-	pub builtin_os_tag: &'static str,
+	pub builtin_platform_tag: &'static str,
+	pub builtin_platform_family_tag: &'static str,
+	pub builtin_abi_tag: &'static str,
+	pub builtin_endianness_tag: &'static str,
 	pub winapi_uses_stdcall: bool,
 	pub ptr_width_in_bits: u8,
 }
@@ -203,17 +209,24 @@ impl ResolvedTargetInfo {
 		let triple = Triple::host();
 
 		let arch_name = triple.architecture.to_string().to_ascii_lowercase();
-		let os_name = triple.operating_system.to_string().to_ascii_lowercase();
+		let platform_name = triple.operating_system.to_string().to_ascii_lowercase();
+		let abi_name = triple.environment.to_string().to_ascii_lowercase();
 
 		let builtin_arch_tag = Self::map_arch_to_builtin_tag(&arch_name);
-		let builtin_os_tag = Self::map_os_to_builtin_tag(&os_name);
-		let winapi_uses_stdcall = builtin_os_tag == "windows" && matches!(builtin_arch_tag, "x86");
+		let builtin_platform_tag = Self::map_platform_to_builtin_tag(&platform_name);
+		let builtin_platform_family_tag = Self::map_platform_family_to_builtin_tag(builtin_platform_tag);
+		let builtin_abi_tag = Self::map_abi_to_builtin_tag(&abi_name, builtin_platform_tag);
+		let builtin_endianness_tag = Self::map_endianness_to_builtin_tag(triple.endianness().expect("cannot fetch target endianness"));
+		let winapi_uses_stdcall = builtin_platform_tag == "windows" && matches!(builtin_arch_tag, "x86");
 		let ptr_width_in_bits = triple.pointer_width().expect("cannot fetch target ptr size").bits();
 
 		Self {
 			triple,
 			builtin_arch_tag,
-			builtin_os_tag,
+			builtin_platform_tag,
+			builtin_platform_family_tag,
+			builtin_abi_tag,
+			builtin_endianness_tag,
 			winapi_uses_stdcall,
 			ptr_width_in_bits,
 		}
@@ -256,15 +269,15 @@ impl ResolvedTargetInfo {
 		}
 	}
 
-	fn map_os_to_builtin_tag(os: &str) -> &'static str {
-		match os {
+	fn map_platform_to_builtin_tag(platform: &str) -> &'static str {
+		match platform {
 			"windows" => "windows",
 			"linux" => "linux",
-			"macos" | "darwin" => "macos",
+			"macos" | "macosx" | "darwin" => "macos",
 			"ios" => "ios",
 			"tvos" => "tvos",
 			"watchos" => "watchos",
-			"visionos" => "visionos",
+			"visionos" | "xros" => "visionos",
 			"freebsd" => "freebsd",
 			"openbsd" => "openbsd",
 			"netbsd" => "netbsd",
@@ -273,7 +286,7 @@ impl ResolvedTargetInfo {
 			"illumos" => "illumos",
 			"solaris" => "illumos",
 			"emscripten" => "emscripten",
-			"wasi" => "wasi",
+			"wasi" | "wasip1" | "wasip2" => "wasi",
 			"uefi" => "uefi",
 			"fuchsia" => "fuchsia",
 			"hurd" => "hurd",
@@ -285,6 +298,43 @@ impl ResolvedTargetInfo {
 			"managarm" => "managarm",
 			"none" | "unknown" => "freestanding",
 			_ => "other",
+		}
+	}
+
+	fn map_platform_family_to_builtin_tag(platform: &str) -> &'static str {
+		match platform {
+			"windows" => "windows",
+			"linux" | "macos" | "ios" | "tvos" | "watchos" | "visionos" | "freebsd" | "openbsd" | "netbsd" | "dragonfly" | "haiku"
+			| "illumos" | "fuchsia" | "hurd" | "hermit" | "emscripten" => "posix",
+			"wasi" => "wasi",
+			"freestanding" | "uefi" => "freestanding",
+			"amdhsa" | "amdpal" | "cuda" | "mesa3d" | "nvcl" | "opencl" | "opengl" | "vulkan" => "gpu",
+			_ => "other",
+		}
+	}
+
+	fn map_abi_to_builtin_tag(
+		abi: &str,
+		platform: &str,
+	) -> &'static str {
+		match abi {
+			"msvc" => "msvc",
+			"gnu" | "gnuabi64" | "gnueabi" | "gnueabihf" | "gnuspe" | "gnux32" | "gnu_ilp32" | "gnullvm" => "gnu",
+			"musl" | "musleabi" | "musleabihf" | "muslabi64" => "musl",
+			"android" | "androideabi" => "android",
+			"macabi" => "apple",
+			"none" => "none",
+			"unknown" if matches!(platform, "macos" | "ios" | "tvos" | "watchos" | "visionos") => "apple",
+			"unknown" if platform == "wasi" => "wasi",
+			"unknown" => "none",
+			_ => "other",
+		}
+	}
+
+	fn map_endianness_to_builtin_tag(endianness: TargetEndianness) -> &'static str {
+		match endianness {
+			TargetEndianness::Little => "little",
+			TargetEndianness::Big => "big",
 		}
 	}
 }
@@ -429,10 +479,19 @@ pub const target: Target = Target {{
 	.cpu = Target.CPU {{
 			.arch = .{}
 	}},
-	.os = .{}
+	.platform = .{},
+	.family = .{},
+	.abi = .{},
+	.endianness = .{},
+	.ptr_width = {},
 }};
 "#,
-			self.resolved_target.builtin_arch_tag, self.resolved_target.builtin_os_tag,
+			self.resolved_target.builtin_arch_tag,
+			self.resolved_target.builtin_platform_tag,
+			self.resolved_target.builtin_platform_family_tag,
+			self.resolved_target.builtin_abi_tag,
+			self.resolved_target.builtin_endianness_tag,
+			self.resolved_target.ptr_width_in_bits,
 		)
 	}
 

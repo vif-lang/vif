@@ -1,6 +1,10 @@
 const target = @import("builtin").target;
 const arch = target.cpu.arch;
-const os = target.os;
+const platform = target.platform;
+const family = target.family;
+const abi = target.abi;
+const endianness = target.endianness;
+const ptr_width = target.ptr_width;
 
 fn main() void {
 }
