@@ -1,0 +1,15 @@
+const Color = enum {
+    red,
+    green,
+    blue,
+}
+
+fn main() void {
+    var color: Color = switch 0 {
+        0, 1, 2 => .red
+        3, 4, 5 => .green
+        else    => .blue
+    }
+}
+
+//@ args: build

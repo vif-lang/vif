@@ -2812,7 +2812,7 @@ impl<'a> Sema<'a> {
 				else_body,
 				span,
 			} => {
-				let operand_ref = self.vuir_map[operand];
+				let operand_ref = self.resolve_inst(operand);
 
 				// For tagged unions, extract the tag and switch on that
 				let original_operand_ty = self.type_of(&operand_ref);
@@ -2974,7 +2974,7 @@ impl<'a> Sema<'a> {
 				case_item,
 				span,
 			} => {
-				let union_val = self.vuir_map[switch_operand];
+				let union_val = self.resolve_inst(switch_operand);
 				let union_ty = self.type_of(&union_val);
 
 				let (key, value_ref) = self.cu.values.index_to_key_value(union_ty);

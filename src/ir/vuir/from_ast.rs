@@ -467,6 +467,21 @@ impl<'ast> Lowerer<'ast> {
 		}
 	}
 
+	fn coerce_result_location(
+		&mut self,
+		block_scope: ScopeId,
+		rhs_ctx: ExprResultLocation,
+	) -> ExprResultLocation {
+		match rhs_ctx {
+			ExprResultLocation::CoerceToTy(ty) => ExprResultLocation::CoerceToTy(ty),
+			ExprResultLocation::StoreToPtr { ptr, .. } => {
+				let ty = self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr });
+				ExprResultLocation::CoerceToTy(ty)
+			},
+			_ => ExprResultLocation::None,
+		}
+	}
+
 	fn resolve_symbol(
 		&mut self,
 		block_scope: ScopeId,
@@ -1551,6 +1566,7 @@ impl<'ast> Lowerer<'ast> {
 				if let Some(label) = sw.label {
 					self.check_label_already_defined(block_scope, label);
 				}
+				let switch_rhs_ctx = self.coerce_result_location(block_scope, rhs_ctx);
 
 				let switch_block = self.inst_id(block_scope, vuir::Opcode::Invalid);
 				let switch_scope = self.stack_block(block_scope, BlockKind::Block {
@@ -1560,7 +1576,6 @@ impl<'ast> Lowerer<'ast> {
 
 				// Lower the switch expression as the operand
 				let operand_ref = self.lower_expr(*switch_scope, sw.expr, ExprResultLocation::None);
-				let operand = operand_ref.as_id().expect("switch operand must be an instruction");
 
 				// Get the type of the operand for enum variant inference in case patterns
 				let operand_ty = self.inst(*switch_scope, vuir::Opcode::TypeOf { value: operand_ref });
@@ -1583,7 +1598,7 @@ impl<'ast> Lowerer<'ast> {
 							// and bind it as a local value so the body can reference it
 							let body_scope = if let Some(capture) = case.capture {
 								let capture_ref = self.inst(*scope, vuir::Opcode::SwitchCapture {
-									switch_operand: operand,
+									switch_operand: operand_ref,
 									case_item: item,
 									span: capture.span,
 								});
@@ -1603,7 +1618,7 @@ impl<'ast> Lowerer<'ast> {
 								*scope
 							};
 
-							let (val, value_span) = self.lower_switch_body(body_scope, case.body);
+							let (val, value_span) = self.lower_switch_body(body_scope, case.body, switch_rhs_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1631,7 +1646,7 @@ impl<'ast> Lowerer<'ast> {
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-							let (val, value_span) = self.lower_switch_body(*scope, case.body);
+							let (val, value_span) = self.lower_switch_body(*scope, case.body, switch_rhs_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1657,7 +1672,7 @@ impl<'ast> Lowerer<'ast> {
 				// Lower else body
 				let else_body = if let Some(else_body) = sw.else_body {
 					let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-					let (val, value_span) = self.lower_switch_body(*scope, else_body);
+					let (val, value_span) = self.lower_switch_body(*scope, else_body, switch_rhs_ctx);
 					if !scope.block(self).ends_with_never(self) {
 						self.inst(*scope, vuir::Opcode::Break {
 							block: switch_block,
@@ -1672,7 +1687,7 @@ impl<'ast> Lowerer<'ast> {
 
 				// Emit the Switch instruction inside the block scope
 				self.inst(*switch_scope, vuir::Opcode::Switch {
-					operand,
+					operand: operand_ref,
 					single_cases: single_cases.into_bump_slice(),
 					multi_cases: multi_cases.into_bump_slice(),
 					else_body,
@@ -1733,13 +1748,14 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		body: &'ast ast::SwitchBody,
+		rhs_ctx: ExprResultLocation,
 	) -> (vuir::InstructionRef, Span) {
 		match body {
 			ast::SwitchBody::Block(block) => {
 				self.lower_block(block_scope, block);
 				(vuir::InstructionRef::Interned(self.cu.values.common.void_value), block.span)
 			},
-			ast::SwitchBody::Expr(expr) => (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span),
+			ast::SwitchBody::Expr(expr) => (self.lower_expr(block_scope, expr, rhs_ctx), expr.span),
 		}
 	}
 
@@ -1834,15 +1850,16 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		r#if: &'static ast::If,
-		_rhs_ctx: ExprResultLocation,
+		rhs_ctx: ExprResultLocation,
 	) -> vuir::InstructionRef {
 		let cond = (self.lower_expr(block_scope, r#if.cond, ExprResultLocation::None), r#if.cond.span);
+		let branch_rhs_ctx = self.coerce_result_location(block_scope, rhs_ctx);
 
 		let branch_block = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
 		let then_body = {
 			let scope = self.stack_block(block_scope, BlockKind::Branch(branch_block.as_ref()));
-			self.lower_if_body(*scope, r#if.then_body, branch_block);
+			self.lower_if_body(*scope, r#if.then_body, branch_block, branch_rhs_ctx);
 
 			self.collect_instructions_and_unstack_block(scope)
 		};
@@ -1852,14 +1869,14 @@ impl<'ast> Lowerer<'ast> {
 			if let Some(r#else) = r#if.else_block {
 				match &r#else {
 					ast::ElseBlock::If(r#if) => {
-						let value = self.lower_expr_if(*scope, r#if, _rhs_ctx);
+						let value = self.lower_expr_if(*scope, r#if, branch_rhs_ctx);
 						self.inst(*scope, vuir::Opcode::Break {
 							block: branch_block,
 							value,
 							value_span: r#if.span,
 						});
 					},
-					ast::ElseBlock::Body(body) => self.lower_if_body(*scope, body, branch_block),
+					ast::ElseBlock::Body(body) => self.lower_if_body(*scope, body, branch_block, branch_rhs_ctx),
 				}
 			}
 
@@ -1897,6 +1914,7 @@ impl<'ast> Lowerer<'ast> {
 		block_scope: ScopeId,
 		body: &'ast ast::IfBody,
 		branch_block: vuir::InstructionId,
+		rhs_ctx: ExprResultLocation,
 	) {
 		match body {
 			ast::IfBody::Block(block) => {
@@ -1910,7 +1928,7 @@ impl<'ast> Lowerer<'ast> {
 				}
 			},
 			ast::IfBody::Expr(expr) => {
-				let value = self.lower_expr(block_scope, expr, ExprResultLocation::None);
+				let value = self.lower_expr(block_scope, expr, rhs_ctx);
 				if !self.scopes[block_scope].as_block().ends_with_never(self) {
 					self.inst(block_scope, vuir::Opcode::Break {
 						block: branch_block,

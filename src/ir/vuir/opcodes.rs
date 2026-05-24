@@ -526,7 +526,7 @@ pub enum Opcode {
 	},
 	/// Must be wrapped with a Block with each body breaking back into the blockx
 	Switch {
-		operand: InstructionId,
+		operand: InstructionRef,
 		single_cases: &'static [SwitchSingleCase],
 		multi_cases: &'static [SwitchMultiCase],
 		else_body: Option<&'static [InstructionId]>,
@@ -541,7 +541,7 @@ pub enum Opcode {
 	/// Resolved in sema to a UnionFieldValue.
 	SwitchCapture {
 		/// The switch operand (original union value)
-		switch_operand: InstructionId,
+		switch_operand: InstructionRef,
 		/// The case pattern item (resolved to an EnumTag in sema)
 		case_item: InstructionRef,
 		span: Span,

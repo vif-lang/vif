@@ -2806,10 +2806,7 @@ impl Parser {
 			},
 		};
 
-		let val = match self.expect_expr() {
-			Ok(val) => val,
-			Err(err) => return Err(err),
-		};
+		let val = self.expect_expr()?;
 		let val = self.data.push(&val);
 
 		Ok(VarBinding { id, name, ty, val })
