@@ -706,23 +706,6 @@ impl Parser {
 		let (generics, params, callconv, ret_ty, variadic) = self.parse_fn_decl(false)?;
 		let ret_ty = ret_ty.unwrap();
 
-		let requires = if self.eat_if(TokenTag::KwRequires).is_some() {
-			let mut requires = Vec::new_in(self.linear_alloc.clone());
-
-			loop {
-				let expr = self.expect_expr()?;
-				requires.push(expr);
-
-				if self.eat_if(TokenTag::Comma).is_none() {
-					break;
-				}
-			}
-
-			self.data.push_slice(&requires)
-		} else {
-			self.data.push_slice(&[])
-		};
-
 		let has_body = self.peek().kind == TokenTag::LBrace;
 
 		if !has_body && (ext == Extern::None) && !allow_bodyless {
@@ -752,7 +735,6 @@ impl Parser {
 			kind: AssociatedItemKind::Fn(Fn {
 				ident,
 				comptime: is_comptime,
-				requires,
 				generics,
 				params,
 				callconv,

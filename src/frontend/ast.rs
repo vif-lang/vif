@@ -1045,7 +1045,6 @@ pub struct Fn {
 	pub comptime: bool,
 	pub callconv: Option<&'static Expr>,
 	pub variadic: bool,
-	pub requires: &'static [Expr],
 	/// Generics are guaranteed to be unique, i.e., no duplicate names/ids.
 	pub generics: &'static [Generic],
 	pub params: &'static [FnParam],

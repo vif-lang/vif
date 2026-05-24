@@ -519,16 +519,13 @@ tokens! {
 	DirInline = "#inline",
 	DirPacked = "#packed",
 	DirLinear = "#linear",
-	@keyword KwConcept = "concept",
 	DirCallconv = "#callconv",
-	@keyword KwRequires = "requires",
 	@keyword KwContinue = "continue",
 	@keyword KwErrdefer = "errdefer",
 	DirNoinline = "#noinline",
 	DirVolatile = "#volatile",
 	DirAddrspace = "#addrspace",
 	@keyword KwUndefined = "undefined",
-	@keyword KwUnreachable = "unreachable",
 
 	Invalid = "invalid token",
 	Eof = "EOF",
@@ -1445,13 +1442,10 @@ impl<'src> Lexer<'src> {
 								"extern" => TokenKind::KwExtern,
 								"anyint" => TokenKind::TyAnyint,
 								"comptime" => TokenKind::KwComptime,
-								"concept" => TokenKind::KwConcept,
-								"requires" => TokenKind::KwRequires,
 								"continue" => TokenKind::KwContinue,
 								"errdefer" => TokenKind::KwErrdefer,
 								"anyfloat" => TokenKind::TyAnyfloat,
 								"undefined" => TokenKind::KwUndefined,
-								"unreachable" => TokenKind::KwUnreachable,
 							}
 						};
 
