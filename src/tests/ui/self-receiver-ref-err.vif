@@ -2,7 +2,7 @@ const S = struct {
     a: i32,
 
     pub fn by_ref(self: *Self) i32 {
-        self.a
+        return self.a;
     }
 };
 

@@ -1603,15 +1603,12 @@ impl<'ast> Lowerer<'ast> {
 								*scope
 							};
 
-							let val = match &case.stmt.kind {
-								ast::StatementKind::ImplicitReturn(expr) => self.lower_expr(body_scope, expr, ExprResultLocation::None),
-								_ => self.lower_stmt(body_scope, case.stmt).0,
-							};
+							let (val, value_span) = self.lower_switch_body(body_scope, case.body);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
 									value: val,
-									value_span: case.stmt.span,
+									value_span,
 								});
 							}
 							self.collect_instructions_and_unstack_block(scope)
@@ -1634,15 +1631,12 @@ impl<'ast> Lowerer<'ast> {
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-							let val = match &case.stmt.kind {
-								ast::StatementKind::ImplicitReturn(expr) => self.lower_expr(*scope, expr, ExprResultLocation::None),
-								_ => self.lower_stmt(*scope, case.stmt).0,
-							};
+							let (val, value_span) = self.lower_switch_body(*scope, case.body);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
 									value: val,
-									value_span: case.stmt.span,
+									value_span,
 								});
 							}
 							self.collect_instructions_and_unstack_block(scope)
@@ -1661,17 +1655,14 @@ impl<'ast> Lowerer<'ast> {
 				}
 
 				// Lower else body
-				let else_body = if let Some(else_stmt) = sw.else_stmt {
+				let else_body = if let Some(else_body) = sw.else_body {
 					let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-					let val = match &else_stmt.kind {
-						ast::StatementKind::ImplicitReturn(expr) => self.lower_expr(*scope, expr, ExprResultLocation::None),
-						_ => self.lower_stmt(*scope, else_stmt).0,
-					};
+					let (val, value_span) = self.lower_switch_body(*scope, else_body);
 					if !scope.block(self).ends_with_never(self) {
 						self.inst(*scope, vuir::Opcode::Break {
 							block: switch_block,
 							value: val,
-							value_span: else_stmt.span,
+							value_span,
 						});
 					}
 					Some(self.collect_instructions_and_unstack_block(scope))
@@ -1689,7 +1680,7 @@ impl<'ast> Lowerer<'ast> {
 				});
 
 				// If no else, add implicit void break after the switch
-				if sw.else_stmt.is_none() && !switch_scope.block(self).ends_with_never(self) {
+				if sw.else_body.is_none() && !switch_scope.block(self).ends_with_never(self) {
 					self.inst(*switch_scope, vuir::Opcode::Break {
 						block: switch_block,
 						value: vuir::InstructionRef::Interned(self.cu.values.common.void_value),
@@ -1736,6 +1727,20 @@ impl<'ast> Lowerer<'ast> {
 
 		// default expression rvalue handling
 		self.rvalue(block_scope, inst, rhs_ctx, expr.span)
+	}
+
+	fn lower_switch_body(
+		&mut self,
+		block_scope: ScopeId,
+		body: &'ast ast::SwitchBody,
+	) -> (vuir::InstructionRef, Span) {
+		match body {
+			ast::SwitchBody::Block(block) => {
+				self.lower_block(block_scope, block);
+				(vuir::InstructionRef::Interned(self.cu.values.common.void_value), block.span)
+			},
+			ast::SwitchBody::Expr(expr) => (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span),
+		}
 	}
 
 	fn try_lower_linear_unary_expr(
@@ -1837,14 +1842,7 @@ impl<'ast> Lowerer<'ast> {
 
 		let then_body = {
 			let scope = self.stack_block(block_scope, BlockKind::Branch(branch_block.as_ref()));
-			self.lower_block(*scope, r#if.then_block);
-			if !scope.block(self).ends_with_never(self) {
-				self.inst(block_scope, vuir::Opcode::Break {
-					block: branch_block,
-					value: vuir::InstructionRef::Interned(self.cu.values.common.void_value),
-					value_span: r#if.then_block.span,
-				});
-			}
+			self.lower_if_body(*scope, r#if.then_body, branch_block);
 
 			self.collect_instructions_and_unstack_block(scope)
 		};
@@ -1861,9 +1859,7 @@ impl<'ast> Lowerer<'ast> {
 							value_span: r#if.span,
 						});
 					},
-					ast::ElseBlock::Block(block) => {
-						self.lower_block(*scope, block);
-					},
+					ast::ElseBlock::Body(body) => self.lower_if_body(*scope, body, branch_block),
 				}
 			}
 
@@ -1894,6 +1890,36 @@ impl<'ast> Lowerer<'ast> {
 		};
 
 		branch_block.as_ref()
+	}
+
+	fn lower_if_body(
+		&mut self,
+		block_scope: ScopeId,
+		body: &'ast ast::IfBody,
+		branch_block: vuir::InstructionId,
+	) {
+		match body {
+			ast::IfBody::Block(block) => {
+				self.lower_block(block_scope, block);
+				if !self.scopes[block_scope].as_block().ends_with_never(self) {
+					self.inst(block_scope, vuir::Opcode::Break {
+						block: branch_block,
+						value: vuir::InstructionRef::Interned(self.cu.values.common.void_value),
+						value_span: block.span,
+					});
+				}
+			},
+			ast::IfBody::Expr(expr) => {
+				let value = self.lower_expr(block_scope, expr, ExprResultLocation::None);
+				if !self.scopes[block_scope].as_block().ends_with_never(self) {
+					self.inst(block_scope, vuir::Opcode::Break {
+						block: branch_block,
+						value,
+						value_span: expr.span,
+					});
+				}
+			},
+		}
 	}
 
 	/// Lower an expression being part of the init part of a declaration.
@@ -2080,67 +2106,6 @@ impl<'ast> Lowerer<'ast> {
 					},
 				};
 
-				(inst, block_scope)
-			},
-			ast::StatementKind::ImplicitReturn(expr) => {
-				// implicit returns stop at the first block found, even if it's a loop
-				// we'll error out later
-				let break_block_scope = self
-					.traverse_scopes_from(block_scope, |scope| match &self.scopes[scope] {
-						Scope::Block(block) => match block.kind {
-							BlockKind::Loop { .. } | BlockKind::Branch(_) | BlockKind::Block { .. } => {
-								ControlFlow::Break(Some((scope, block)))
-							},
-							// completely ignore implicit returns in body blocks
-							BlockKind::Body => ControlFlow::Break(None),
-						},
-						_ => ControlFlow::Continue(()),
-					})
-					.flatten();
-
-				let inst = if let Some((break_block_scope, break_block)) = break_block_scope {
-					let block_inst = match break_block.kind {
-						BlockKind::Loop { block_inst, .. } => {
-							self.errors.push(
-								Diagnostic::error()
-									.with_message("implicit return illegal in loop expressions")
-									.with_label(Label::primary().with_span(self.diag_span(expr.span)))
-									.with_note("use the `break ...;` syntax to exit the loop with a value"),
-							);
-							block_inst
-						},
-						BlockKind::Branch(inst) | BlockKind::Block { inst, .. } => inst,
-						BlockKind::Body => unreachable!(),
-					}
-					.as_id()
-					.unwrap();
-
-					// Breaking to an enclosing block or branch. Do not coerce to the function return type.
-					let value = self.lower_expr(block_scope, expr, ExprResultLocation::None);
-					self.append_defers(block_scope, break_block_scope);
-					self.inst(block_scope, vuir::Opcode::Break {
-						block: block_inst,
-						value,
-						value_span: expr.span,
-					})
-				} else {
-					// No block, assume we return from the enclosing function
-					let ret_type = self.inst(block_scope, vuir::Opcode::TypeOfCurFnRet);
-					let value = self.lower_expr(block_scope, expr, ExprResultLocation::CoerceToTy(ret_type));
-					let value = self.inst(block_scope, vuir::Opcode::Coerce {
-						value,
-						into: ret_type,
-						span: expr.span,
-					});
-
-					// since we assume to return from the function, append defers until function root scope
-					self.append_defers(block_scope, self.fn_body_root_scope.expect("return outside function"));
-
-					self.inst(block_scope, vuir::Opcode::Return {
-						value: Some(value),
-						span: stmt.span,
-					})
-				};
 				(inst, block_scope)
 			},
 			ast::StatementKind::Assign { lhs, op, rhs } => {

@@ -417,7 +417,7 @@ impl PartialEq for Block {
 #[derive(Copy, Clone, Debug)]
 pub enum ElseBlock {
 	If(If),
-	Block(Block),
+	Body(IfBody),
 }
 
 impl ElseBlock {
@@ -428,7 +428,23 @@ impl ElseBlock {
 
 	#[inline(always)]
 	pub fn as_block(&self) -> Option<&Block> {
-		if let ElseBlock::Block(block) = self { Some(block) } else { None }
+		if let ElseBlock::Body(IfBody::Block(block)) = self { Some(block) } else { None }
+	}
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum IfBody {
+	Block(Block),
+	Expr(&'static Expr),
+}
+
+impl IfBody {
+	#[inline(always)]
+	pub fn span(&self) -> Span {
+		match self {
+			IfBody::Block(block) => block.span,
+			IfBody::Expr(expr) => expr.span,
+		}
 	}
 }
 
@@ -436,7 +452,7 @@ impl ElseBlock {
 pub struct If {
 	pub id: NodeId,
 	pub cond: &'static Expr,
-	pub then_block: &'static Block,
+	pub then_body: &'static IfBody,
 	pub else_block: Option<&'static ElseBlock>,
 	pub span: Span,
 }
@@ -503,7 +519,7 @@ pub struct Switch {
 	pub expr: &'static Expr,
 	pub cases: &'static [SwitchCase],
 	pub else_capture: Option<&'static Expr>,
-	pub else_stmt: Option<&'static Statement>,
+	pub else_body: Option<&'static SwitchBody>,
 	pub span: Span,
 }
 
@@ -512,8 +528,24 @@ pub struct SwitchCase {
 	pub id: NodeId,
 	pub patterns: &'static [Expr],
 	pub capture: Option<Ident>,
-	pub stmt: &'static Statement,
+	pub body: &'static SwitchBody,
 	pub span: Span,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum SwitchBody {
+	Block(&'static Block),
+	Expr(&'static Expr),
+}
+
+impl SwitchBody {
+	#[inline(always)]
+	pub fn span(&self) -> Span {
+		match self {
+			SwitchBody::Block(block) => block.span,
+			SwitchBody::Expr(expr) => expr.span,
+		}
+	}
 }
 
 impl PartialEq for For {
@@ -857,7 +889,6 @@ pub enum StatementKind {
 	Const(&'static VarBinding),
 	ComptimeVarBinding(&'static VarBinding),
 	Return(Option<&'static Expr>),
-	ImplicitReturn(&'static Expr),
 	Defer(&'static Expr),
 	Errdefer(&'static Expr),
 	Assign {
@@ -886,7 +917,6 @@ impl core::fmt::Display for StatementKind {
 			StatementKind::Const(..) => write!(f, "Const"),
 			StatementKind::ComptimeVarBinding(..) => write!(f, "Comptime Binding"),
 			StatementKind::Return(..) => write!(f, "Return"),
-			StatementKind::ImplicitReturn(..) => write!(f, "ImplicitReturn"),
 			StatementKind::Defer(..) => write!(f, "Defer"),
 			StatementKind::Errdefer(..) => write!(f, "Errdefer"),
 			StatementKind::Assign { .. } => write!(f, "Assign"),

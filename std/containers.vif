@@ -1,13 +1,13 @@
 const std = @import("std");
 
 fn DynArray(comptime T: type, comptime allocator_ty: type) type {
-	#linear struct {
+	return #linear struct {
 		elements: []T,
 		capacity: usize,
 		allocator: allocator_ty,
 
 		fn new(allocator: allocator_ty) Self {
-			.{ .elements = @zeroed(), .capacity = 0, .allocator = allocator }
+			return .{ .elements = @zeroed(), .capacity = 0, .allocator = allocator };
 		}
 
 		fn drop(self: Self) void {
@@ -28,7 +28,7 @@ fn DynArray(comptime T: type, comptime allocator_ty: type) type {
 			self.elements[index] = elem;
 			self.elements = std.slice.from_raw_parts(std.slice.ptr(self.elements), index + 1usize);
 
-			index
+			return index;
 		}
 
 		/// Grow for atleast N elements.
@@ -52,15 +52,15 @@ fn DynArray(comptime T: type, comptime allocator_ty: type) type {
 
 		/// Returns the whole allocated memory as a slice. May contains uninitialized elements.
 		#inline fn allocated_slice(self: *Self) []const T {
-			std.slice.from_raw_parts(std.slice.ptr(self.elements), self.capacity)
+			return std.slice.from_raw_parts(std.slice.ptr(self.elements), self.capacity);
 		}
 
 		#inline fn capacity(self: Self) usize {
-			self.capacity
+			return self.capacity;
 		}
 
 		#inline fn len(self: *Self) usize {
-			std.slice.len(self.elements)
+			return std.slice.len(self.elements);
 		}
-	}
+	};
 }

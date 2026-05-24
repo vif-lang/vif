@@ -617,7 +617,7 @@ impl<'a> Sema<'a> {
 		// after body analysis, the control flow MUST not be always returns
 		// or else it means we are missing a return
 		if body_flow != ControlFlow::Always {
-			// for void ret it is ok, implicit return
+			// implicit return for void ret ty
 			if ret_ty == self.cu.values.common.void_t {
 				self.inst(block, vtir::Opcode::Return { value: None });
 			} else {

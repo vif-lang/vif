@@ -5,7 +5,7 @@ const slice = std.slice;
 //// Allocate `bytes` of virtual memory, padding the allocation to the page boundary.
 #inline fn allocate(self: Self, size_in_bytes: usize) []const u8 {
 	const ptr: *const u8 = windows.VirtualAlloc(@nullptr(), size_in_bytes, windows.MEM_COMMIT, windows.PAGE_READWRITE);
-	slice.from_raw_parts(ptr, size_in_bytes)
+	return slice.from_raw_parts(ptr, size_in_bytes);
 }
 
 /// Free a virtual allocation

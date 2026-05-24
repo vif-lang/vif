@@ -1,0 +1,27 @@
+const std = @import("std");
+extern "c" fn printf(fmt: *const u8, ...) i32;
+
+const Student = struct {
+    score: i32,
+
+    fn fails(self: Self) bool {
+        return self.score < 10;
+    }
+};
+
+fn main() void {
+    const stud: Student = .{ .score = 7 };
+    const a: i32 = if Student.fails(stud) 1i32 else 0i32;
+
+    const a: i32 = 1;
+    const b: i32 = switch a {
+        0, 1 => 2i32
+        else => 3i32
+    };
+
+    printf(std.slice.ptr("%d %d\n"), a, b);
+}
+
+//@ args: run
+//@ stdout:
+// 1 2

@@ -1,0 +1,14 @@
+fn value() i32 {
+    1
+}
+
+fn main() void {}
+
+//@ args: build
+//@ stderr:
+// error: missing semicolon
+//   --> src/tests/ui/implicit-return-err.vif:2:5
+//   |
+// 2 |     1
+//   |     ^
+//

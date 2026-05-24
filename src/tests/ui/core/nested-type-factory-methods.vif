@@ -2,25 +2,25 @@ const std = @import("std");
 extern "c" fn printf(fmt: *const u8, ...) i32;
 
 fn Pair(comptime T: type, comptime U: type) type {
-    struct {
+    return struct {
         left: T,
         right: U,
 
         fn left_value(self: Self) T {
             return self.left;
         }
-    }
+    };
 }
 
 fn Wrapper(comptime Inner: type) type {
-    struct {
+    return struct {
         inner: Inner,
         bias: usize,
 
         fn checksum(self: Self) usize {
             return self.bias + @size_of(Inner);
         }
-    }
+    };
 }
 
 fn main() void {

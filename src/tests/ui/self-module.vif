@@ -1,11 +1,11 @@
 value: i32,
 
 fn foo() i32 {
-    0
+    return 0;
 }
 
 fn new() Self {
-    .{ .value = 0 }
+    return .{ .value = 0 };
 }
 
 fn main() void {

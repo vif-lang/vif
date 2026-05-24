@@ -2,7 +2,7 @@ const S = struct {
     a: i32,
 
     pub fn associated() i32 {
-        42
+        return 42;
     }
 };
 

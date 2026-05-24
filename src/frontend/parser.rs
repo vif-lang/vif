@@ -2145,8 +2145,8 @@ impl Parser {
 		let cond = self.expect_expr_ctx_no_init(ctx)?;
 		let cond = self.data.push(&cond);
 
-		let then_block = self.parse_block_impl(None, false, self.peek().span, ctx)?;
-		let then_block = self.data.push(&then_block);
+		let then_body = self.parse_if_body(ctx)?;
+		let then_body = self.data.push(&then_body);
 
 		let mut branches = Vec::new_in(self.linear_alloc.clone());
 
@@ -2155,42 +2155,46 @@ impl Parser {
 				let elif_cond = self.expect_expr_ctx_no_init(ctx)?;
 				let elif_cond = self.data.push(&elif_cond);
 
-				let elif_block = self.parse_block_impl(None, false, self.peek().span, ctx)?;
-				let elif_block = self.data.push(&elif_block);
+				let elif_body = self.parse_if_body(ctx)?;
+				let elif_body = self.data.push(&elif_body);
 
 				branches.push((
 					self.next_id(),
 					Some(elif_cond),
-					elif_block,
-					(elif_cond.span, elif_block.span).into(),
+					elif_body,
+					(elif_cond.span, elif_body.span()).into(),
 				));
 			} else {
-				let else_block = self.parse_block_impl(None, false, self.peek().span, ctx)?;
-				let else_block = self.data.push(&else_block);
+				let else_body = self.parse_if_body(ctx)?;
+				let else_body = self.data.push(&else_body);
 
-				branches.push((self.next_id(), None, else_block, else_block.span));
+				branches.push((self.next_id(), None, else_body, else_body.span()));
 				break;
 			}
+		}
+
+		if matches!(then_body, IfBody::Expr(_)) && branches.is_empty() {
+			return Err(self.diag_expected_token(TokenTag::KwElse, self.prev()));
 		}
 
 		// Build the else_block chain from the inside out (reverse iteration)
 		let mut else_block: Option<&'static ElseBlock> = None;
 
-		for (id, branch_cond, branch_block, span) in branches.into_iter().rev() {
+		for (id, branch_cond, branch_body, span) in branches.into_iter().rev() {
 			match branch_cond {
 				Some(elif_cond) => {
 					// This is an else-if: wrap in an If struct, then in ElseBlock::If
 					let inner_if = If {
 						id,
 						cond: elif_cond,
-						then_block: branch_block,
+						then_body: branch_body,
 						else_block,
 						span,
 					};
 					else_block = Some(self.data.push(&ElseBlock::If(inner_if)));
 				},
 				None => {
-					else_block = Some(self.data.push(&ElseBlock::Block(*branch_block)));
+					else_block = Some(self.data.push(&ElseBlock::Body(*branch_body)));
 				},
 			}
 		}
@@ -2199,12 +2203,25 @@ impl Parser {
 		let if_expr = self.data.push(&If {
 			id,
 			cond,
-			then_block,
+			then_body,
 			else_block,
 			span: (start_span, self.prev().span).into(),
 		});
 
 		Ok(ExprKind::If(if_expr))
+	}
+
+	fn parse_if_body(
+		&mut self,
+		ctx: Ctx,
+	) -> Result<IfBody, Diagnostic> {
+		if self.peek().kind == TokenKind::LBrace {
+			let block = self.parse_block_impl(None, false, self.peek().span, ctx)?;
+			Ok(IfBody::Block(block))
+		} else {
+			let expr = self.expect_expr_ctx(ctx)?;
+			Ok(IfBody::Expr(self.data.push(&expr)))
+		}
 	}
 
 	/// Unified implementation for `while` expressions.
@@ -2313,7 +2330,7 @@ impl Parser {
 				None
 			};
 
-			let stmt = self.parse_statement_impl(ctx)?;
+			let body = self.parse_switch_body(ctx)?;
 			let case_end_span = self.prev().span;
 
 			let id = self.next_id();
@@ -2322,26 +2339,26 @@ impl Parser {
 				id,
 				patterns: self.data.push_slice(&patterns),
 				capture,
-				stmt: self.data.push(&stmt),
+				body: self.data.push(&body),
 				span: (case_start_span, case_end_span).into(),
 			});
 		}
 
 		let cases = self.data.push_slice(&cases);
 
-		let (else_capture, else_stmt) = if self.eat_if(TokenTag::KwElse).is_some() {
+		let (else_capture, else_body) = if self.eat_if(TokenTag::KwElse).is_some() {
 			if self.eat_if(TokenTag::FatArrow).is_some() {
-				let stmt = self.parse_statement_impl(ctx)?;
-				(None, Some(self.data.push(&stmt)))
+				let body = self.parse_switch_body(ctx)?;
+				(None, Some(self.data.push(&body)))
 			} else {
 				let capture = self.expect_expr_ctx(ctx)?;
 				let capture = self.data.push(&capture);
 
 				self.eat_expect(TokenTag::FatArrow)?;
 
-				let stmt = self.parse_statement_impl(ctx)?;
+				let body = self.parse_switch_body(ctx)?;
 
-				(Some(capture), Some(self.data.push(&stmt)))
+				(Some(capture), Some(self.data.push(&body)))
 			}
 		} else {
 			(None, None)
@@ -2356,11 +2373,24 @@ impl Parser {
 			expr,
 			cases,
 			else_capture,
-			else_stmt,
+			else_body,
 			span: (start_span, self.prev().span).into(),
 		});
 
 		Ok(ExprKind::Switch(switch_expr))
+	}
+
+	fn parse_switch_body(
+		&mut self,
+		ctx: Ctx,
+	) -> Result<SwitchBody, Diagnostic> {
+		if self.peek().kind == TokenKind::LBrace {
+			let block = self.parse_block_impl(None, false, self.peek().span, ctx)?;
+			Ok(SwitchBody::Block(self.data.push(&block)))
+		} else {
+			let expr = self.expect_expr_ctx(ctx)?;
+			Ok(SwitchBody::Expr(self.data.push(&expr)))
+		}
 	}
 
 	/// Unified implementation for block expressions.
@@ -2372,22 +2402,8 @@ impl Parser {
 		start_span: Span,
 		ctx: Ctx,
 	) -> Result<Block, Diagnostic> {
-		let mut saw_implicit_return = false;
-
 		let stmts = self.eat_group(TokenTag::LBrace, TokenTag::RBrace, |parser| {
-			if unlikely(saw_implicit_return) {
-				parser.push_error(parser.diag_missing_semicolon(parser.prev()));
-			}
-
-			let stmt = parser.parse_statement_impl(ctx)?;
-
-			if let StatementKind::ImplicitReturn(expr) = &stmt.kind
-				&& unlikely(!expr.is_control_flow())
-			{
-				saw_implicit_return = true;
-			}
-
-			Ok(stmt)
+			parser.parse_statement_impl(ctx)
 		})?;
 
 		let end_span = self.prev().span;
@@ -2522,10 +2538,10 @@ impl Parser {
 							StatementKind::Expr(expr)
 						},
 						kind => {
-							if expr.is_control_flow() && !matches!(kind, TokenKind::RBrace | TokenKind::Comma) {
+							if (expr.is_control_flow() || matches!(expr.kind, ExprKind::Block(..))) && !matches!(kind, TokenKind::Comma) {
 								StatementKind::Expr(expr)
 							} else {
-								StatementKind::ImplicitReturn(expr)
+								return Err(self.diag_missing_semicolon(self.prev()));
 							}
 						},
 					}

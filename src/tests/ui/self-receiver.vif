@@ -2,15 +2,15 @@ const S = struct {
     value: i32,
 
     pub fn a(self: *Self) i32 {
-        self.value
+        return self.value;
     }
 
     pub fn b(self: *const Self) i32 {
-        self.value
+        return self.value;
     }
 
     pub fn c(self: Self) i32 {
-        self.value
+        return self.value;
     }
 };
 

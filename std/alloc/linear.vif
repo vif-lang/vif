@@ -2,7 +2,7 @@ const slice = @import("std").slice;
 
 /// A simple block based linear-allocator backed by another allocator
 fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: usize) type {
-	struct {
+	return struct {
 		const Block = struct {
 			data: []u8,
 			/// Next block in the chain, stored as usize (null = 0)
@@ -19,12 +19,12 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 		cur_offset: usize,
 
 		fn new(backing_allocator: backing_allocator_ty) Self {
-			.{
+			return .{
 				.backing_allocator = backing_allocator,
 				.first_block = @nullptr(),
 				.cur_block = @nullptr(),
 				.cur_offset = 0,
-			}
+			};
 		}
 
 		/// Allocate a new block from the backing allocator and append it to the chain.
@@ -65,7 +65,7 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 			const alloc_addr: usize = base_addr + self.cur_offset;
 			const alloc_ptr: *const u8 = @int_to_ptr(alloc_addr);
 			self.cur_offset = self.cur_offset + size_in_bytes;
-			slice.from_raw_parts(alloc_ptr, size_in_bytes)
+			return slice.from_raw_parts(alloc_ptr, size_in_bytes);
 		}
 
 		fn deallocate(self: *Self, alloc: []const u8) void {
@@ -87,5 +87,5 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 			self.cur_block = @nullptr();
 			self.cur_offset = 0;
 		}
-	}
+	};
 }
