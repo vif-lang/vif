@@ -1,19 +1,19 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 fn sum_until(limit: i32) i32 {
-    var i: i32 = 0;
-    var sum: i32 = 0;
+    var i: i32 = 0
+    var sum: i32 = 0
     const result: i32 = loop {
-        if i == limit { break sum; }
-        sum += i;
-        i += 1;
-    };
-    return result;
+        if i == limit { break sum }
+        sum += i
+        i += 1
+    }
+    return result
 }
 
 fn main() void {
-    printf(std.slice.ptr("%d\n"), sum_until(6));
+    printf(std.slice.ptr("%d\n"), sum_until(6))
 }
 
 //@ args: run

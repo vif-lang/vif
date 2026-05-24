@@ -2,7 +2,7 @@ fn bad() #callconv(1) void {
 }
 
 fn main() void {
-	bad();
+	bad()
 }
 
 //@ args: build

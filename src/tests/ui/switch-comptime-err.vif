@@ -1,10 +1,10 @@
 fn main() void {
-    var x: i32 = 1i32;
+    var x: i32 = 1i32
     switch x {
         0 => {
-            var a: i32 = false;
+            var a: i32 = false
         }
-        else => { var a: i32 = 20; }
+        else => { var a: i32 = 20 }
     }
 }
 
@@ -13,6 +13,6 @@ fn main() void {
 // error: expected type `i32`, found `bool`
 //   --> src/tests/ui/switch-comptime-err.vif:5:17
 //   |
-// 5 |             var a: i32 = false;
+// 5 |             var a: i32 = false
 //   |                 ^^^^^^^^^^^^^^
 //

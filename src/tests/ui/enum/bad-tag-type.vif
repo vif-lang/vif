@@ -2,10 +2,10 @@ const Fruit = enum(*u8) {
     apple,
     orange,
     pineapple,
-};
+}
 
 fn main() void {
-    const a: Fruit = .apple;
+    const a: Fruit = .apple
 }
 
 //@ args: build

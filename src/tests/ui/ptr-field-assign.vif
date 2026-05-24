@@ -1,19 +1,19 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
-const Point = struct { x: i32, y: i32 };
+const Point = struct { x: i32, y: i32 }
 
 fn translate(p: *Point, dx: i32, dy: i32) void {
-    const nx: i32 = p.x + dx;
-    const ny: i32 = p.y + dy;
-    p.x = nx;
-    p.y = ny;
+    const nx: i32 = p.x + dx
+    const ny: i32 = p.y + dy
+    p.x = nx
+    p.y = ny
 }
 
 fn main() void {
-    var p: Point = Point { .x = 1, .y = 2 };
-    translate(&p, 3, 4);
-    printf(std.slice.ptr("%d %d\n"), p.x, p.y);
+    var p: Point = Point { .x = 1, .y = 2 }
+    translate(&p, 3, 4)
+    printf(std.slice.ptr("%d %d\n"), p.x, p.y)
 }
 
 //@ args: run

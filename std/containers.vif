@@ -1,4 +1,4 @@
-const std = @import("std");
+const std = @import("std")
 
 fn DynArray(comptime T: type, comptime allocator_ty: type) type {
 	return #linear struct {
@@ -7,60 +7,60 @@ fn DynArray(comptime T: type, comptime allocator_ty: type) type {
 		allocator: allocator_ty,
 
 		fn new(allocator: allocator_ty) Self {
-			return .{ .elements = @zeroed(), .capacity = 0, .allocator = allocator };
+			return .{ .elements = @zeroed(), .capacity = 0, .allocator = allocator }
 		}
 
 		fn drop(self: Self) void {
 			if std.slice.ptr(self.elements) != @nullptr($T: *const T) {
-				self.allocator.deallocate(std.slice.cast(self.elements));
+				self.allocator.deallocate(std.slice.cast(self.elements))
 			}
 
-			@forget(self);
+			@forget(self)
 		}
 
 		/// Push one element, returning its index.
 		fn push(self: *Self, elem: T) usize {
-			const index: usize = self.len();
+			const index: usize = self.len()
 			if index >= self.capacity() {
-				self.grow(index + 1usize);
+				self.grow(index + 1usize)
 			}
 
-			self.elements[index] = elem;
-			self.elements = std.slice.from_raw_parts(std.slice.ptr(self.elements), index + 1usize);
+			self.elements[index] = elem
+			self.elements = std.slice.from_raw_parts(std.slice.ptr(self.elements), index + 1usize)
 
-			return index;
+			return index
 		}
 
 		/// Grow for atleast N elements.
 		fn grow(self: *Self, additional: usize) void {
 			// TODO: exponential growth
-			const old_capacity = self.capacity;
-			const old_elements = self.allocated_slice();
-			self.capacity += additional;
+			const old_capacity = self.capacity
+			const old_elements = self.allocated_slice()
+			self.capacity += additional
 
 			// allocate new storage
-			const new_elements: []const u8 = self.allocator.allocate(self.capacity * @size_of(T));
-			const new_elements: []const T = std.slice.cast(new_elements);//[0..self.len()];
+			const new_elements: []const u8 = self.allocator.allocate(self.capacity * @size_of(T))
+			const new_elements: []const T = std.slice.cast(new_elements)//[0..self.len()]
 
 			// copy previous data
-			std.slice.copy_nonoverlapping(src: old_elements, dst: new_elements);
+			std.slice.copy_nonoverlapping(src: old_elements, dst: new_elements)
 
 			// deallocate old storage and set new elements
-			self.allocator.deallocate(std.slice.cast(old_elements));
-			self.elements = new_elements;
+			self.allocator.deallocate(std.slice.cast(old_elements))
+			self.elements = new_elements
 		}
 
 		/// Returns the whole allocated memory as a slice. May contains uninitialized elements.
 		#inline fn allocated_slice(self: *Self) []const T {
-			return std.slice.from_raw_parts(std.slice.ptr(self.elements), self.capacity);
+			return std.slice.from_raw_parts(std.slice.ptr(self.elements), self.capacity)
 		}
 
 		#inline fn capacity(self: Self) usize {
-			return self.capacity;
+			return self.capacity
 		}
 
 		#inline fn len(self: *Self) usize {
-			return std.slice.len(self.elements);
+			return std.slice.len(self.elements)
 		}
-	};
+	}
 }

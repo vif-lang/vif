@@ -1,5 +1,5 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 // NOTE: This file is intentionally repetitive.
 // It exists to stress recursive descent in the parser with deep parenthesized expressions.
@@ -44,7 +44,7 @@ const STRESS_VALUE: i32 =
     ))))))))))))))))
     ))))))))))))))))
     ))))))))))))))))
-    ))))))))))))))));
+    ))))))))))))))))
 
 fn stress_parse_depth() i32 {
     return
@@ -87,11 +87,11 @@ fn stress_parse_depth() i32 {
         ))))))))))))))))
         ))))))))))))))))
         ))))))))))))))))
-        ))))))))))))))));
+        ))))))))))))))))
 }
 
 fn main() void {
-    printf(std.slice.ptr("%d %d\n"), STRESS_VALUE, stress_parse_depth());
+    printf(std.slice.ptr("%d %d\n"), STRESS_VALUE, stress_parse_depth())
 }
 
 //@ args: run

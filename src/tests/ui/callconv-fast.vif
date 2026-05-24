@@ -1,9 +1,9 @@
 fn add_fast(a: i32, b: i32) #callconv(.fast) i32 {
-    return a + b;
+    return a + b
 }
 
 fn main() void {
-    add_fast(1, 2);
+    add_fast(1, 2)
 }
 
 //@ args: build

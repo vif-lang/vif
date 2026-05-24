@@ -4,42 +4,42 @@
 /// Built-in functions are prefixed by `@`.
 
 /// Import the module at `path`.
-extern "builtin" #inline fn @import(comptime path: []const u8) type;
+extern "builtin" #inline fn @import(comptime path: []const u8) type
 
 /// Convert any enum `value` to its corresponding tag underlying type.
-extern "builtin" #inline fn @int_from_enum(value: any) any;
+extern "builtin" #inline fn @int_from_enum(value: any) any
 
 /// Convert any int `value` to a float.
-extern "builtin" #inline fn @int_to_float(value: any) any;
+extern "builtin" #inline fn @int_to_float(value: any) any
 
 /// Returns a null pointer.
-extern "builtin" #inline fn @nullptr($T) $T;
+extern "builtin" #inline fn @nullptr($T) $T
 
 /// Returns the size of a type in bytes.
-extern "builtin" #inline fn @size_of(comptime ty: type) usize;
+extern "builtin" #inline fn @size_of(comptime ty: type) usize
 
 /// Returns the size of a type in bits.
-extern "builtin" #inline fn @bit_size_of(comptime ty: type) usize;
+extern "builtin" #inline fn @bit_size_of(comptime ty: type) usize
 
 /// Returns the value of type `$T` represented by the all-zero byte-pattern.
-extern "builtin" #inline fn @zeroed() $T;
+extern "builtin" #inline fn @zeroed() $T
 
 /// Unsafe conversion from `$src` integer type to `$dst` integer type.
-extern "builtin" #inline fn @unsafe_int_cast(value: $src) $dst;
+extern "builtin" #inline fn @unsafe_int_cast(value: $src) $dst
 
-extern "builtin" #inline fn @ptr_to_int($T, ptr: $T) usize;
-extern "builtin" #inline fn @int_to_ptr($T, ptr: usize) $T;
+extern "builtin" #inline fn @ptr_to_int($T, ptr: $T) usize
+extern "builtin" #inline fn @int_to_ptr($T, ptr: usize) $T
 
 /// Abort the process. Equivalent to a `ud2` in x86.
-extern "builtin" #inline fn @abort() never;
+extern "builtin" #inline fn @abort() never
 
 /// An unreachable call. Unlike @abort, behavior is unspecified if reached.
-extern "builtin" #inline fn @unreachable() never;
+extern "builtin" #inline fn @unreachable() never
 
 /// Consume a linear value, dropping it without calling any destructor.
 /// This is the only way to end the lifetime of a linear value.
-extern "builtin" #inline fn @forget(value: any) void;
+extern "builtin" #inline fn @forget(value: any) void
 
 /// Transmute a value from a type to another.
 /// It ensures that both types have a matching size.
-extern "builtin" #inline fn @bitcast(value: any) any;
+extern "builtin" #inline fn @bitcast(value: any) any

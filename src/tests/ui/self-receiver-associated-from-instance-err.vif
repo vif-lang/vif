@@ -2,13 +2,13 @@ const S = struct {
     a: i32,
 
     pub fn associated() i32 {
-        return 42;
+        return 42
     }
-};
+}
 
 fn main() void {
-    var instance: S = .{ .a = 42 };
-    instance.associated();
+    var instance: S = .{ .a = 42 }
+    instance.associated()
 }
 
 //@ args: build
@@ -16,6 +16,6 @@ fn main() void {
 // error: `associated` is not a member function
 //    --> src/tests/ui/self-receiver-associated-from-instance-err.vif:11:14
 //    |
-// 11 |     instance.associated();
+// 11 |     instance.associated()
 //    |              ^^^^^^^^^^
 //

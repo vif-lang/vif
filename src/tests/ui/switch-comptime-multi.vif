@@ -1,12 +1,12 @@
 fn main() void {
-    comptime const x: i32 = 3i32;
+    comptime const x: i32 = 3i32
     switch x {
-        0, 1 => { var a: i32 = true; }
+        0, 1 => { var a: i32 = true }
         2, 3 => {
             // This multi-pattern branch should be selected at compile time
-            var a: i32 = 20;
+            var a: i32 = 20
         }
-        else => { var a: i32 = true; }
+        else => { var a: i32 = true }
     }
 }
 

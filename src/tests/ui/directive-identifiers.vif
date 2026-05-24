@@ -1,21 +1,21 @@
 const Box = #linear struct {
 	value: i32,
-};
+}
 
 #inline fn id(value: i32) i32 {
-	return value;
+	return value
 }
 
 fn main() void {
-	const inline = id(1);
-	const noinline = inline + 1;
-	const callconv = noinline + 1;
-	const packed = callconv + 1;
-	const linear = packed + 1;
-	const volatile = linear + 1;
-	const addrspace = volatile + 1;
-	const box = Box { .value = addrspace };
-	@forget(box);
+	const inline = id(1)
+	const noinline = inline + 1
+	const callconv = noinline + 1
+	const packed = callconv + 1
+	const linear = packed + 1
+	const volatile = linear + 1
+	const addrspace = volatile + 1
+	const box = Box { .value = addrspace }
+	@forget(box)
 }
 
 //@ args: build

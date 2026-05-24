@@ -1,13 +1,13 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 fn main() void {
-    var i: i32 = 0;
+    var i: i32 = 0
     const result: i32 = loop {
-        if i == 3 { break i * 10; }
-        i += 1;
-    };
-    printf(std.slice.ptr("%d\n"), result);
+        if i == 3 { break i * 10 }
+        i += 1
+    }
+    printf(std.slice.ptr("%d\n"), result)
 }
 
 //@ args: run

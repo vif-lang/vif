@@ -1,9 +1,9 @@
 fn main() void {
-    var x: i32 = 5i32;
+    var x: i32 = 5i32
     switch x {
-        0, 1 => { var a: i32 = 10; }
-        2, 3, 4 => { var a: i32 = 20; }
-        else => { var a: i32 = 30; }
+        0, 1 => { var a: i32 = 10 }
+        2, 3, 4 => { var a: i32 = 20 }
+        else => { var a: i32 = 30 }
     }
 }
 

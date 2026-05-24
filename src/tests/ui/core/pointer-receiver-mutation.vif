@@ -1,25 +1,25 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 const Cell = struct {
     value: usize,
 
     fn add(self: *Self, delta: usize) usize {
-        self.value += delta;
-        return self.value;
+        self.value += delta
+        return self.value
     }
-};
+}
 
 fn bump_twice(cell: *Cell) usize {
-    const a = cell.add(10usize);
-    const b = cell.add(20usize);
-    return a + b + cell.value;
+    const a = cell.add(10usize)
+    const b = cell.add(20usize)
+    return a + b + cell.value
 }
 
 fn main() void {
-    var cell: Cell = .{ .value = 1usize };
-    const result = bump_twice(&cell);
-    printf(std.slice.ptr("%u %u\n"), result, cell.value);
+    var cell: Cell = .{ .value = 1usize }
+    const result = bump_twice(&cell)
+    printf(std.slice.ptr("%u %u\n"), result, cell.value)
 }
 
 //@ args: run

@@ -2,13 +2,13 @@ const Color = enum {
     Red,
     Green,
     Blue,
-};
+}
 
 fn main() void {
-    var c: Color = Color.Red;
+    var c: Color = Color.Red
     switch c {
-        Color.Red => { var a: i32 = 1; }
-        Color.Green => { var a: i32 = 2; }
+        Color.Red => { var a: i32 = 1 }
+        Color.Green => { var a: i32 = 2 }
     }
 }
 
@@ -19,10 +19,10 @@ fn main() void {
 //    |
 // 9  |     switch c {
 //    |     ^^^^^^^^^^
-// 10 |         Color.Red => { var a: i32 = 1; }
-//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-// 11 |         Color.Green => { var a: i32 = 2; }
-//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 10 |         Color.Red => { var a: i32 = 1 }
+//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 11 |         Color.Green => { var a: i32 = 2 }
+//    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 // 12 |     }
 //    | ^^^^^
 //

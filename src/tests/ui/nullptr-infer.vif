@@ -1,5 +1,5 @@
 fn main() void {
-    var x: *u8 = @nullptr();
+    var x: *u8 = @nullptr()
 }
 
 //@ args: build

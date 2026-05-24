@@ -1,9 +1,9 @@
-const Handle = #linear struct { fd: i32 };
-fn consume(h: Handle) void { @forget(h); }
+const Handle = #linear struct { fd: i32 }
+fn consume(h: Handle) void { @forget(h) }
 fn main() void {
-    const h: Handle = Handle { .fd = 5 };
-    consume(h);
-    consume(h);
+    const h: Handle = Handle { .fd = 5 }
+    consume(h)
+    consume(h)
 }
 
 //@ args: build
@@ -11,10 +11,10 @@ fn main() void {
 // error: use of moved linear value `h`
 //   --> src/tests/ui/linear/use-after-move.vif:6:13
 //   |
-// 4 |     const h: Handle = Handle { .fd = 5 };
+// 4 |     const h: Handle = Handle { .fd = 5 }
 //   |           - linear value declared here
-// 5 |     consume(h);
+// 5 |     consume(h)
 //   |             - value consumed here
-// 6 |     consume(h);
+// 6 |     consume(h)
 //   |             ^
 //

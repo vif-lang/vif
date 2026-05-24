@@ -2,30 +2,30 @@ const S = struct {
     value: i32,
 
     pub fn a(self: *Self) i32 {
-        return self.value;
+        return self.value
     }
 
     pub fn b(self: *const Self) i32 {
-        return self.value;
+        return self.value
     }
 
     pub fn c(self: Self) i32 {
-        return self.value;
+        return self.value
     }
-};
+}
 
 fn main() void {
     var instance: S = .{
         .value = 42,
-    };
+    }
 
-    instance.a();
-    instance.b();
-    instance.c();
+    instance.a()
+    instance.b()
+    instance.c()
 
-    S.a(&instance);
-    S.b(&instance);
-    S.c(instance);
+    S.a(&instance)
+    S.b(&instance)
+    S.c(instance)
 }
 
 //@ args: build

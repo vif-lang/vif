@@ -1,7 +1,7 @@
-const Handle = #linear struct { fd: i32 };
+const Handle = #linear struct { fd: i32 }
 fn main() void {
-    const h: Handle = Handle { .fd = 5 };
-    @forget(h);
+    const h: Handle = Handle { .fd = 5 }
+    @forget(h)
 }
 
 //@ args: build

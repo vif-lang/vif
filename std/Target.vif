@@ -67,8 +67,8 @@ pub const CPU = struct {
 		xcore,
 		xtensa,
 		xtensaeb,
-	};
-};
+	}
+}
 
 pub const Platform = enum {
 	freestanding,
@@ -121,7 +121,7 @@ pub const Platform = enum {
 	opencl,
 	opengl,
 	vulkan,
-};
+}
 
 pub const PlatformFamily = enum {
 	windows,
@@ -130,7 +130,7 @@ pub const PlatformFamily = enum {
 	freestanding,
 	gpu,
 	other,
-};
+}
 
 pub const ABI = enum {
 	none,
@@ -141,9 +141,9 @@ pub const ABI = enum {
 	apple,
 	wasi,
 	other,
-};
+}
 
 pub const Endianness = enum {
 	little,
 	big,
-};
+}

@@ -484,7 +484,7 @@ pub const target: Target = Target {{
 	.abi = .{},
 	.endianness = .{},
 	.ptr_width = {},
-}};
+}}
 "#,
 			self.resolved_target.builtin_arch_tag,
 			self.resolved_target.builtin_platform_tag,

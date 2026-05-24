@@ -3,13 +3,13 @@ const Outer = struct {
         value: i32,
 
         fn new() Self {
-            return .{ .value = 0 };
+            return .{ .value = 0 }
         }
-    };
-};
+    }
+}
 
 fn main() void {
-    var val = Outer.Inner.new();
+    var val = Outer.Inner.new()
 }
 
 //@ args: build

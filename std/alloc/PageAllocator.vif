@@ -1,14 +1,14 @@
-const std = @import("std");
-const windows = std.os.windows;
-const slice = std.slice;
+const std = @import("std")
+const windows = std.os.windows
+const slice = std.slice
 
 //// Allocate `bytes` of virtual memory, padding the allocation to the page boundary.
 #inline fn allocate(self: Self, size_in_bytes: usize) []const u8 {
-	const ptr: *const u8 = windows.VirtualAlloc(@nullptr(), size_in_bytes, windows.MEM_COMMIT, windows.PAGE_READWRITE);
-	return slice.from_raw_parts(ptr, size_in_bytes);
+	const ptr: *const u8 = windows.VirtualAlloc(@nullptr(), size_in_bytes, windows.MEM_COMMIT, windows.PAGE_READWRITE)
+	return slice.from_raw_parts(ptr, size_in_bytes)
 }
 
 /// Free a virtual allocation
 #inline fn deallocate(self: Self, alloc: []const u8) void {
-	windows.VirtualFree(slice.ptr(alloc), slice.len(alloc), windows.MEM_RELEASE);
+	windows.VirtualFree(slice.ptr(alloc), slice.len(alloc), windows.MEM_RELEASE)
 }

@@ -1,12 +1,12 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 fn main() void {
-    comptime const a = 340282366920938463463374607431768211456;
-    comptime const b = a + a;
-    comptime const c: u8 = (b >> 129);
-    var x: u8 = c;
-    printf(std.slice.ptr("%u\n"), x);
+    comptime const a = 340282366920938463463374607431768211456
+    comptime const b = a + a
+    comptime const c: u8 = (b >> 129)
+    var x: u8 = c
+    printf(std.slice.ptr("%u\n"), x)
 }
 
 //@ args: run

@@ -1,4 +1,4 @@
-const missing = @import("missing.vif");
+const missing = @import("missing.vif")
 
 fn main() void {}
 
@@ -7,6 +7,6 @@ fn main() void {}
 // error: cannot open module `src/tests/ui/missing.vif`
 //   --> src/tests/ui/import-missing.vif:1:25
 //   |
-//1 | const missing = @import("missing.vif");
+//1 | const missing = @import("missing.vif")
 //   |                         ^^^^^^^^^^^^^ imported here
 //

@@ -7,6 +7,6 @@ fn not_main() void {
 // error: declaration `main` does not exist in type `missing-main.vif`
 //   --> target/debug/deps/std/rt.vif:9:7
 //   |
-// 9 | 	root.main();
+// 9 | 	root.main()
 //   |       ^^^^
 //

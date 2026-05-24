@@ -1,11 +1,11 @@
 fn main() void {
-    comptime const x: i32 = 99i32;
+    comptime const x: i32 = 99i32
     switch x {
-        0 => { var a: i32 = true; }
-        1 => { var a: i32 = true; }
+        0 => { var a: i32 = true }
+        1 => { var a: i32 = true }
         else => {
             // else branch selected at compile time since 99 doesn't match any case
-            var a: i32 = 30;
+            var a: i32 = 30
         }
     }
 }

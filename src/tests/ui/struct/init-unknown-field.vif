@@ -1,12 +1,12 @@
 fn main() void {
     const Fruit = struct {
         size: i32
-    };
+    }
 
     const apple: Fruit = .{
         .size = 1,
         .weight = 1,
-    };
+    }
 }
 
 //@ args: build

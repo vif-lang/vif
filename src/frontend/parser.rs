@@ -709,7 +709,6 @@ impl Parser {
 		let has_body = self.peek().kind == TokenTag::LBrace;
 
 		if !has_body && (ext == Extern::None) && !allow_bodyless {
-			self.eat_expect(TokenTag::Semicolon)?;
 			return Err(self.diag_expected_token(TokenTag::LBrace, self.prev()));
 		}
 
@@ -725,7 +724,6 @@ impl Parser {
 		let block = if has_body {
 			self.parse_block_impl(None, false, self.peek().span, Ctx::Value).map(Some)?
 		} else {
-			self.eat_expect(TokenTag::Semicolon)?;
 			None
 		};
 
@@ -2402,9 +2400,7 @@ impl Parser {
 		start_span: Span,
 		ctx: Ctx,
 	) -> Result<Block, Diagnostic> {
-		let stmts = self.eat_group(TokenTag::LBrace, TokenTag::RBrace, |parser| {
-			parser.parse_statement_impl(ctx)
-		})?;
+		let stmts = self.eat_group(TokenTag::LBrace, TokenTag::RBrace, |parser| parser.parse_statement_impl(ctx))?;
 
 		let end_span = self.prev().span;
 
@@ -2429,28 +2425,25 @@ impl Parser {
 			TokenKind::KwReturn => {
 				self.offset += 1;
 
-				let expr = if self.peek().kind != TokenTag::Semicolon {
+				let expr = if !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Comma | TokenKind::Eof) {
 					let expr = self.expect_expr_ctx(ctx)?;
 					Some(self.data.push(&expr))
 				} else {
 					None
 				};
 
-				self.eat_expect(TokenTag::Semicolon)?;
 				StatementKind::Return(expr)
 			},
 			TokenKind::KwDefer => {
 				self.offset += 1;
 
 				let expr = self.expect_expr_ctx(ctx)?;
-				self.eat_expect(TokenTag::Semicolon)?;
 				StatementKind::Defer(self.data.push(&expr))
 			},
 			TokenKind::KwErrdefer => {
 				self.offset += 1;
 
 				let expr = self.expect_expr_ctx(ctx)?;
-				self.eat_expect(TokenTag::Semicolon)?;
 				StatementKind::Errdefer(self.data.push(&expr))
 			},
 			TokenKind::KwContinue => {
@@ -2462,10 +2455,9 @@ impl Parser {
 					None
 				};
 
-				let value = if self.eat_if(TokenTag::Semicolon).is_none() && self.peek().kind != TokenKind::Comma {
+				let value = if !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Comma | TokenKind::Eof) {
 					let value = self.expect_expr()?;
 					let value = self.data.push(&value);
-					self.eat_if(TokenTag::Semicolon);
 					Some(value)
 				} else {
 					None
@@ -2482,10 +2474,9 @@ impl Parser {
 					None
 				};
 
-				let value = if self.eat_if(TokenTag::Semicolon).is_none() && self.peek().kind != TokenKind::Comma {
+				let value = if !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Comma | TokenKind::Eof) {
 					let value = self.expect_expr()?;
 					let value = self.data.push(&value);
-					self.eat_if(TokenTag::Semicolon);
 					Some(value)
 				} else {
 					None
@@ -2528,23 +2519,9 @@ impl Parser {
 					let rhs = self.expect_expr_ctx(ctx)?;
 					let rhs = self.data.push(&rhs);
 
-					self.eat_expect(TokenTag::Semicolon)?;
-
 					StatementKind::Assign { lhs: expr, op, rhs }
 				} else {
-					match self.peek().kind {
-						TokenKind::Semicolon => {
-							self.offset += 1; // consume ';'
-							StatementKind::Expr(expr)
-						},
-						kind => {
-							if (expr.is_control_flow() || matches!(expr.kind, ExprKind::Block(..))) && !matches!(kind, TokenKind::Comma) {
-								StatementKind::Expr(expr)
-							} else {
-								return Err(self.diag_missing_semicolon(self.prev()));
-							}
-						},
-					}
+					StatementKind::Expr(expr)
 				}
 			},
 		};
@@ -2796,7 +2773,7 @@ impl Parser {
 		let name = match self.parse_user_ident() {
 			Ok(id) => id,
 			Err(err) => {
-				self.eat_until3(TokenTag::Colon, TokenTag::Eq, TokenTag::Semicolon);
+				self.eat_until2(TokenTag::Colon, TokenTag::Eq);
 				self.push_error(err);
 				Ident {
 					symbol: COMMON_INTERNS.empty_str,
@@ -2810,7 +2787,7 @@ impl Parser {
 			Some(match self.expect_ty_expr() {
 				Ok(ty) => self.data.push(&ty),
 				Err(err) => {
-					self.eat_until2(TokenTag::Eq, TokenTag::Semicolon);
+					self.eat_until(TokenTag::Eq);
 					self.push_error(err);
 					let id = self.next_id();
 					let kind = ExprKind::Type(self.common_types.any_ty);
@@ -2825,22 +2802,15 @@ impl Parser {
 		match self.eat_expect(TokenTag::Eq) {
 			Ok(_) => {},
 			Err(err) => {
-				self.eat_until(TokenTag::Semicolon);
-				self.offset += 1;
 				return Err(err);
 			},
 		};
 
 		let val = match self.expect_expr() {
 			Ok(val) => val,
-			Err(err) => {
-				self.eat_until(TokenTag::Semicolon);
-				self.eat_if(TokenTag::Semicolon);
-				return Err(err);
-			},
+			Err(err) => return Err(err),
 		};
 		let val = self.data.push(&val);
-		self.eat_expect(TokenTag::Semicolon)?;
 
 		Ok(VarBinding { id, name, ty, val })
 	}
@@ -3156,9 +3126,6 @@ impl Parser {
 					self.push_error(err);
 					if self.offset == start_offset {
 						self.offset += 1;
-						if self.eat_until2(TokenTag::Semicolon, closing_tok) == TokenKind::Semicolon {
-							self.offset += 1
-						}
 					}
 				},
 			}
@@ -3391,17 +3358,6 @@ impl Parser {
 				.with_label(Label::primary().with_span(self.diag_span(token.span)))
 				.with_note("known directives are `#inline`, `#noinline`, `#callconv`, `#linear`, `#packed`, `#volatile`, and `#addrspace`"),
 		)
-	}
-
-	#[cold]
-	#[cfg_attr(debug_assertions, track_caller)]
-	fn diag_missing_semicolon(
-		&self,
-		token: &Token,
-	) -> Diagnostic {
-		Diagnostic::error()
-			.with_message("missing semicolon")
-			.with_label(Label::primary().with_span(self.diag_span(token.span)))
 	}
 
 	#[cold]

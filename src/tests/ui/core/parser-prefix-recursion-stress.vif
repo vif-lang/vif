@@ -1,5 +1,5 @@
-const std = @import("std");
-extern "c" fn printf(fmt: *const u8, ...) i32;
+const std = @import("std")
+extern "c" fn printf(fmt: *const u8, ...) i32
 
 // NOTE: This file stresses the remaining linear recursion paths in parser.rs
 // for deep unary prefixes. Group recursion is covered by parser-recursion-stress.vif.
@@ -13,11 +13,11 @@ const PREFIX_VALUE: i32 =
     ~~~~~~~~~~~~~~~~
     ~~~~~~~~~~~~~~~~
     ~~~~~~~~~~~~~~~~
-    7;
+    7
 
 fn main() void {
-    const typed: i32 = 3;
-    printf(std.slice.ptr("%d %d\n"), PREFIX_VALUE, typed);
+    const typed: i32 = 3
+    printf(std.slice.ptr("%d %d\n"), PREFIX_VALUE, typed)
 }
 
 //@ args: run

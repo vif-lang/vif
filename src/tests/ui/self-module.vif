@@ -1,16 +1,16 @@
 value: i32,
 
 fn foo() i32 {
-    return 0;
+    return 0
 }
 
 fn new() Self {
-    return .{ .value = 0 };
+    return .{ .value = 0 }
 }
 
 fn main() void {
-    var x = Self.foo();
-    var y = Self.new();
+    var x = Self.foo()
+    var y = Self.new()
 }
 
 //@ args: build

@@ -2,13 +2,11 @@ fn value() i32 {
     1
 }
 
-fn main() void {}
+fn main() void {
+    value()
+}
 
 //@ args: build
 //@ stderr:
-// error: missing semicolon
-//   --> src/tests/ui/implicit-return-err.vif:2:5
-//   |
-// 2 |     1
-//   |     ^
+// error: function with non-void return type does not return on all paths
 //

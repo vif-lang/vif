@@ -1,5 +1,5 @@
 fn main() void {
-    const x: u8 = 256;
+    const x: u8 = 256
 }
 
 //@ args: build
@@ -7,6 +7,6 @@ fn main() void {
 // error: coercion failed: constant 256 is too large to fit in a u8
 //   --> src/tests/ui/core/bigint-coercion-overflow.vif:2:11
 //   |
-// 2 |     const x: u8 = 256;
+// 2 |     const x: u8 = 256
 //   |           ^^^^^^^^^^^
 //

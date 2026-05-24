@@ -1,6 +1,6 @@
 fn main() void {
-    comptime const n = 0 - 1;
-    comptime const x = 1 << n;
+    comptime const n = 0 - 1
+    comptime const x = 1 << n
 }
 
 //@ args: build
@@ -8,6 +8,6 @@ fn main() void {
 // error: negative shift amount in comptime shift
 //   --> src/tests/ui/core/bigint-negative-shift.vif:3:24
 //   |
-// 3 |     comptime const x = 1 << n;
+// 3 |     comptime const x = 1 << n
 //   |                        ^^^^^^
 //

@@ -1,12 +1,12 @@
 fn main() void {
-    comptime const x: i32 = 1i32;
+    comptime const x: i32 = 1i32
     switch x {
-        0 => { var a: i32 = true; }
+        0 => { var a: i32 = true }
         1 => {
             // This branch should be selected at compile time
-            var a: i32 = 20;
+            var a: i32 = 20
         }
-        else => { var a: i32 = true; }
+        else => { var a: i32 = true }
     }
 }
 

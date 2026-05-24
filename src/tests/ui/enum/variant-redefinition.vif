@@ -3,10 +3,10 @@ const Fruit = enum {
     orange,
     pineapple,
     apple,
-};
+}
 
 fn main() void {
-    const a: Fruit = .apple;
+    const a: Fruit = .apple
 }
 
 //@ args: build

@@ -1,8 +1,8 @@
-pub const alloc = @import("alloc.vif");
-pub const containers = @import("containers.vif");
-pub const slice = @import("slice.vif");
-pub const os = @import("os.vif");
+pub const alloc = @import("alloc.vif")
+pub const containers = @import("containers.vif")
+pub const slice = @import("slice.vif")
+pub const os = @import("os.vif")
 
-pub const Target = @import("Target.vif");
+pub const Target = @import("Target.vif")
 
-pub const builtin = @import("builtin");
+pub const builtin = @import("builtin")

@@ -428,7 +428,11 @@ impl ElseBlock {
 
 	#[inline(always)]
 	pub fn as_block(&self) -> Option<&Block> {
-		if let ElseBlock::Body(IfBody::Block(block)) = self { Some(block) } else { None }
+		if let ElseBlock::Body(IfBody::Block(block)) = self {
+			Some(block)
+		} else {
+			None
+		}
 	}
 }
 

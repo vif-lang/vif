@@ -2,13 +2,13 @@ const S = struct {
     a: i32,
 
     pub fn by_val(self: Self) i32 {
-        return self.a;
+        return self.a
     }
-};
+}
 
 fn main() void {
-    var instance: S = .{ .a = 42 };
-    S.by_val(&instance);
+    var instance: S = .{ .a = 42 }
+    S.by_val(&instance)
 }
 
 //@ args: build
@@ -16,6 +16,6 @@ fn main() void {
 // error: expected type `S`, found `*S`
 //    --> src/tests/ui/self-receiver-copy-err.vif:11:14
 //    |
-// 11 |     S.by_val(&instance);
+// 11 |     S.by_val(&instance)
 //    |              ^^^^^^^^^
 //
