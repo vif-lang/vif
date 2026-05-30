@@ -35,6 +35,8 @@ pub enum BuiltinKind {
 	Forget,
 	Bitcast,
 	SliceCopyNonoverlapping,
+	AnyptrIs,
+	AnyptrAs,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -73,7 +75,7 @@ pub enum NamingKind {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct StructInitField {
+pub struct AdtInitField {
 	pub name: ast::Ident,
 	pub value: InstructionRef,
 	pub span: Span,
@@ -101,6 +103,15 @@ pub enum Capture {
 	/// Take parent value
 	FromParent(usize),
 	Id(InstructionId),
+}
+
+#[derive(Clone, Debug)]
+pub enum AggregateInitKind {
+	/// A special case for `.{}` where there is an ambiguity between array vs adt, this allows semantic analysis
+	/// to disambiguate
+	Empty,
+	Array(&'static [InstructionRef]),
+	Adt(&'static [AdtInitField]),
 }
 
 #[derive(Clone, Debug)]
@@ -321,10 +332,10 @@ pub enum Opcode {
 		span: Span,
 	},
 
-	/// Initialize a structure of type `ty` and returns it
+	/// Initialize an aggregate of type `ty` and returns it
 	AggregateInit {
-		ty: Option<InstructionRef>,
-		fields: &'static [StructInitField],
+		ty: InstructionRef,
+		kind: AggregateInitKind,
 		span: Span,
 	},
 

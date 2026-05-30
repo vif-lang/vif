@@ -956,6 +956,34 @@ impl<'a> Sema<'a> {
 				});
 				Ok(result)
 			},
+			vuir::BuiltinKind::AnyptrIs => {
+				let target_ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
+				let value = self.resolve_inst(&func_vuir_info.params[1].as_ref());
+				let value_ty = self.type_of(&value);
+				if value_ty != self.cu.values.common.anyptr_t {
+					self.push_error(
+						Diagnostic::error()
+							.with_message(format!("expected `anyptr`, found `{}`", self.cu.values.display_index(value_ty)))
+							.with_label(Label::primary().with_span(caller_span)),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				}
+				Ok(self.inst(block, vtir::Opcode::AnyptrIs { value, target_ty }))
+			},
+			vuir::BuiltinKind::AnyptrAs => {
+				let target_ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
+				let value = self.resolve_inst(&func_vuir_info.params[1].as_ref());
+				let value_ty = self.type_of(&value);
+				if value_ty != self.cu.values.common.anyptr_t {
+					self.push_error(
+						Diagnostic::error()
+							.with_message(format!("expected `anyptr`, found `{}`", self.cu.values.display_index(value_ty)))
+							.with_label(Label::primary().with_span(caller_span)),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				}
+				Ok(self.inst(block, vtir::Opcode::AnyptrAs { value, target_ty }))
+			},
 		}
 	}
 
@@ -1599,29 +1627,44 @@ impl<'a> Sema<'a> {
 				body: _,
 				external,
 				callconv,
-				builtin: _,
+				builtin,
 				inline,
 				first_positional_arg_index,
 				span,
 			} => {
-				// let ret_ty = self.resolve_type(block, ret_ty, span)?;
 				// Collect parameters with both names and types for named argument resolution
-				let (mut param_defs, mut comptime_params) = {
+				let (mut param_defs, mut comptime_params, runtime_param_error) = {
 					let params_block = self.child_block(block);
 					let _ = self.analyze_comptime_block(*params_block, params);
 					let mut comptime_params = BitVec::new();
-					(
-						self.blocks[*params_block]
-							.decl_fn_params
-							.iter()
-							.map(|param| {
-								comptime_params.push(param.comptime);
-								param.ty
-							})
-							.collect::<Vec<_>>(),
-						comptime_params,
-					)
+					let mut runtime_param_error = false;
+					let decl_fn_params = self.blocks[*params_block].decl_fn_params.clone();
+					let mut param_defs = Vec::with_capacity(decl_fn_params.len());
+					for param in decl_fn_params {
+						comptime_params.push(param.comptime);
+						if !param.comptime
+							&& !self.cu.values.type_contains_generic_poison(param.ty)
+							&& self.cu.values.type_is_comptime_only(param.ty)
+						{
+							self.push_error(
+								Diagnostic::error()
+									.with_message(format!(
+										"runtime parameter `{}` cannot have comptime-only type `{}`",
+										param.name,
+										self.cu.values.display_index(param.ty)
+									))
+									.with_label(Label::primary().with_span(self.diag_span(param.span)))
+									.with_note("use `comptime`"),
+							);
+							runtime_param_error = true;
+						}
+						param_defs.push(param.ty);
+					}
+					(param_defs, comptime_params, runtime_param_error)
 				};
+				if runtime_param_error {
+					return Err(AnalyzeError::AnalysisFailed);
+				}
 
 				// Function is generic if it has generic params or if return type is TypeAny
 				let fn_ty = {
@@ -1888,95 +1931,21 @@ impl<'a> Sema<'a> {
 				self.vuir_map.insert(id, inst);
 				Ok((inst, ControlFlow::May))
 			},
-			vuir::Opcode::AggregateInit { ty, fields, span } => {
-				let ty = self.resolve_type(block, ty.as_ref().unwrap(), span)?;
-
-				// Dispatch to union init if the type is a union
-				if matches!(*self.cu.values.index_to_key(ty), value::Key::TypeUnion { .. }) {
-					return self.analyze_union_init(id, block, ty, fields, span);
-				}
-
-				let ty = {
-					if matches!(*self.cu.values.index_to_key(ty), value::Key::TypeStruct { .. }) {
-						Ok(ty)
-					} else {
-						self.push_error(
-							Diagnostic::error()
-								.with_message(format!(
-									"`{}` must be a struct or union to be initialized with init syntax",
-									self.cu.values.display_index(ty)
-								))
-								.with_label(Label::primary().with_span(self.diag_span(*span))),
-						);
-						Err(AnalyzeError::AnalysisFailed)
-					}
-				}?;
-				let r#struct = self.cu.values.index_to_value(ty).as_struct();
-				let r#struct = r#struct.as_ref();
-				let mut analysis_failed = false;
-				let (fields, fields_comptime_known) = {
-					let mut fields_comptime_known = true;
-					let mut out_fields = vec![None; r#struct.fields.len()];
-					for field in fields.iter() {
-						let Some((field_idx, value)) = ('value: {
-							let Some(field_idx) = r#struct.field_idx_by_name(&field.name.symbol) else {
-								self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
-								analysis_failed = true;
-								break 'value None; // does not exist: filtered
-							};
-
-							let field_ty = r#struct.fields[field_idx].ty;
-							let value = self.resolve_inst(&field.value);
-							let Ok(value) = self.coerce(block, &field_ty, &value, &field.span) else {
-								analysis_failed = true;
-								break 'value Some((field_idx, None)); // exist but no value
-							};
-
-							fields_comptime_known &= value.is_interned();
-
-							Some((field_idx, Some(value)))
-						}) else {
-							continue; // field does not exist, skip
-						};
-
-						out_fields[field_idx] = value;
-					}
-					(out_fields, fields_comptime_known)
-				};
-
-				// check for uninit field
-				for (_, field) in r#struct
-					.fields
-					.iter()
-					.enumerate()
-					.filter(|(i, _)| fields.len() <= *i || fields[*i].is_none())
-				{
-					self.push_error(
-						Diagnostic::error()
-							.with_message(format!("field `{}` was not initialized", field.name))
-							.with_label(Label::primary().with_span(self.diag_span(*span)))
-							.with_note(format!("add `.{} = ...,`", field.name)),
-					);
-					analysis_failed = true;
-				}
-
-				if analysis_failed {
-					Err(AnalyzeError::AnalysisFailed)
-				} else {
-					// OPTIM(zino)
-					let value = if fields_comptime_known {
-						let fields = fields
-							.into_iter()
-							.map(|field| self.try_resolve_comptime_value(field.as_ref().unwrap()).unwrap());
-						let fields = self.cu.values.alloc_slice_fill_iter(fields);
-						self.cu.values.intern_trivial(&value::Key::Aggregate { ty, values: fields }).into()
-					} else {
-						// TODO runtime only
-						let fields = fields.iter().copied().flatten().collect::<Vec<_>>();
-						self.inst(block, vtir::Opcode::StructInit { struct_ty: ty, fields })
-					};
-					self.vuir_map.insert(id, value);
-					Ok((value, ControlFlow::May))
+			vuir::Opcode::AggregateInit { ty, kind, span } => {
+				let ty = self.resolve_type(block, ty, span)?;
+				match kind {
+					vuir::AggregateInitKind::Empty => match self.cu.values.index_to_key(ty) {
+						value::Key::TypeUnion { .. } => self.analyze_union_init(id, block, ty, &[], span),
+						value::Key::TypeStruct(..) => self.analyze_struct_init(id, block, ty, &[], span),
+						value::Key::TypeArray(..) | value::Key::TypeSlice(..) => self.analyze_array_init(id, block, ty, &[], span),
+						_ => unreachable!(),
+					},
+					vuir::AggregateInitKind::Adt(fields) => match self.cu.values.index_to_key(ty) {
+						value::Key::TypeUnion { .. } => self.analyze_union_init(id, block, ty, fields, span),
+						value::Key::TypeStruct(..) => self.analyze_struct_init(id, block, ty, fields, span),
+						_ => unreachable!(),
+					},
+					vuir::AggregateInitKind::Array(elements) => self.analyze_array_init(id, block, ty, elements, span),
 				}
 			},
 			vuir::Opcode::DeclFnParam {
@@ -3921,6 +3890,199 @@ impl<'a> Sema<'a> {
 		Ok(inst)
 	}
 
+	fn analyze_union_init(
+		&mut self,
+		id: vuir::InstructionId,
+		block: BlockId,
+		ty: value::Index,
+		fields: &[vuir::AdtInitField],
+		span: &Span,
+	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
+		let union_ty = self.cu.values.index_to_value(ty).as_union();
+		let union_ty = union_ty.as_ref();
+
+		if fields.len() != 1 {
+			self.push_error(
+				Diagnostic::error()
+					.with_message("union initialization requires exactly one field")
+					.with_label(Label::primary().with_span(self.diag_span(*span))),
+			);
+			return Err(AnalyzeError::AnalysisFailed);
+		}
+
+		let field = &fields[0];
+		let field_idx = union_ty.field_idx_by_name(&field.name.symbol).ok_or_else(|| {
+			self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
+			AnalyzeError::AnalysisFailed
+		})?;
+
+		let union_field = &union_ty.fields[field_idx];
+		let value = if let Some(field_ty) = union_field.ty {
+			let value = self.resolve_inst(&field.value);
+			let value = self.coerce(block, &field_ty, &value, &field.span)?;
+			Some(value)
+		} else {
+			None
+		};
+
+		let inst = self.inst(block, vtir::Opcode::UnionInit {
+			union_ty: ty,
+			field_idx,
+			value,
+		});
+		self.vuir_map.insert(id, inst);
+		Ok((inst, ControlFlow::May))
+	}
+
+	fn analyze_struct_init(
+		&mut self,
+		id: vuir::InstructionId,
+		block: BlockId,
+		ty: value::Index,
+		fields: &[vuir::AdtInitField],
+		span: &Span,
+	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
+		let ty = {
+			if matches!(*self.cu.values.index_to_key(ty), value::Key::TypeStruct { .. }) {
+				Ok(ty)
+			} else {
+				self.push_error(
+					Diagnostic::error()
+						.with_message(format!(
+							"`{}` must be a struct or union to be initialized with init syntax",
+							self.cu.values.display_index(ty)
+						))
+						.with_label(Label::primary().with_span(self.diag_span(*span))),
+				);
+				Err(AnalyzeError::AnalysisFailed)
+			}
+		}?;
+		let r#struct = self.cu.values.index_to_value(ty).as_struct();
+		let r#struct = r#struct.as_ref();
+		let mut analysis_failed = false;
+		let (fields, fields_comptime_known) = {
+			let mut fields_comptime_known = true;
+			let mut out_fields = vec![None; r#struct.fields.len()];
+			for field in fields.iter() {
+				let Some((field_idx, value)) = ('value: {
+					let Some(field_idx) = r#struct.field_idx_by_name(&field.name.symbol) else {
+						self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
+						analysis_failed = true;
+						break 'value None; // does not exist: filtered
+					};
+
+					let field_ty = r#struct.fields[field_idx].ty;
+					let value = self.resolve_inst(&field.value);
+					let Ok(value) = self.coerce(block, &field_ty, &value, &field.span) else {
+						analysis_failed = true;
+						break 'value Some((field_idx, None)); // exist but no value
+					};
+
+					fields_comptime_known &= value.is_interned();
+
+					Some((field_idx, Some(value)))
+				}) else {
+					continue; // field does not exist, skip
+				};
+
+				out_fields[field_idx] = value;
+			}
+			(out_fields, fields_comptime_known)
+		};
+
+		// check for uninit field
+		for (_, field) in r#struct
+			.fields
+			.iter()
+			.enumerate()
+			.filter(|(i, _)| fields.len() <= *i || fields[*i].is_none())
+		{
+			self.push_error(
+				Diagnostic::error()
+					.with_message(format!("field `{}` was not initialized", field.name))
+					.with_label(Label::primary().with_span(self.diag_span(*span)))
+					.with_note(format!("add `.{} = ...,`", field.name)),
+			);
+			analysis_failed = true;
+		}
+
+		if analysis_failed {
+			Err(AnalyzeError::AnalysisFailed)
+		} else {
+			// OPTIM(zino)
+			let value = if fields_comptime_known {
+				let fields = fields
+					.into_iter()
+					.map(|field| self.try_resolve_comptime_value(field.as_ref().unwrap()).unwrap());
+				let fields = self.cu.values.alloc_slice_fill_iter(fields);
+				self.cu.values.intern_trivial(&value::Key::Aggregate { ty, values: fields }).into()
+			} else {
+				// TODO runtime only
+				let fields = self.cu.values.alloc_slice_fill_iter(fields.into_iter().map(|field| field.unwrap()));
+				self.inst(block, vtir::Opcode::StructInit { struct_ty: ty, fields })
+			};
+			self.vuir_map.insert(id, value);
+			Ok((value, ControlFlow::May))
+		}
+	}
+
+	fn analyze_array_init(
+		&mut self,
+		id: vuir::InstructionId,
+		block: BlockId,
+		ty: value::Index,
+		elements: &[vuir::InstructionRef],
+		span: &Span,
+	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
+		let value = match *self.cu.values.index_to_key(ty) {
+			value::Key::TypeSlice(slice) if slice.pointee_ty == self.cu.values.common.anyptr_t => {
+				let mut coerced = BumpVec::with_capacity_in(elements.len(), self.instructions_payload_alloc);
+				for element in elements {
+					let value = self.resolve_inst(element);
+					coerced.push(self.coerce(block, &self.cu.values.common.anyptr_t, &value, span)?);
+				}
+				self.inst(block, vtir::Opcode::SliceInit {
+					slice_ty: ty,
+					elements: coerced.into_bump_slice(),
+				})
+			},
+			value::Key::TypeArray(array) => {
+				if elements.len() as u64 != array.len {
+					self.push_error(
+						Diagnostic::error()
+							.with_message(format!("expected {} array elements, found {}", array.len, elements.len()))
+							.with_label(Label::primary().with_span(self.diag_span(*span))),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				}
+
+				let mut coerced = BumpVec::with_capacity_in(elements.len(), self.instructions_payload_alloc);
+				for element in elements {
+					let value = self.resolve_inst(element);
+					coerced.push(self.coerce(block, &array.elem_ty, &value, span)?);
+				}
+				self.inst(block, vtir::Opcode::ArrayInit {
+					array_ty: ty,
+					elements: coerced.into_bump_slice(),
+				})
+			},
+			_ => {
+				self.push_error(
+					Diagnostic::error()
+						.with_message(format!(
+							"`{}` must be an array, or `[]anyptr`, to be initialized with array init syntax",
+							self.cu.values.display_index(ty)
+						))
+						.with_label(Label::primary().with_span(self.diag_span(*span))),
+				);
+				return Err(AnalyzeError::AnalysisFailed);
+			},
+		};
+
+		self.vuir_map.insert(id, value);
+		Ok((value, ControlFlow::May))
+	}
+
 	#[must_use = "coerce return the coerced instruction / value"]
 	#[track_caller]
 	fn coerce(
@@ -3945,7 +4107,24 @@ impl<'a> Sema<'a> {
 		let result: Result<vtir::InstructionRef, String> = 'msg: {
 			match (self.cu.values.index_to_key(inst_ty), self.cu.values.index_to_key(*dst_ty)) {
 				(_, value::Key::TypeType) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(*inst),
-				(_, value::Key::TypeAny) => Ok(*inst),
+				(value::Key::TypeAnyint, value::Key::TypeAnyptr) if !self.blocks[block].comptime => {
+					let concrete = self.coerce(block, &self.cu.values.common.i32_t, inst, span)?;
+					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
+						value: concrete,
+						value_ty: self.cu.values.common.i32_t,
+					}))
+				},
+				(_, value::Key::TypeAnyptr) if !self.cu.values.type_is_comptime_only(inst_ty) => {
+					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
+						value: *inst,
+						value_ty: inst_ty,
+					}))
+				},
+				(_, value::Key::TypeAnyptr) => Err(format!(
+					"cannot coerce comptime-only value of type `{}` to runtime `anyptr`",
+					self.cu.values.display_index(inst_ty)
+				)),
+				(_, value::Key::TypeAny) if self.blocks[block].comptime => Ok(*inst),
 
 				// Integer types conversions
 				(value::Key::TypeAnyint, value::Key::TypeUsize | value::Key::TypeIsize) => {
@@ -4517,50 +4696,6 @@ impl<'a> Sema<'a> {
 			let errors = errors.entry(self.module).or_default();
 			errors.push(diagnostic);
 		});
-	}
-
-	fn analyze_union_init(
-		&mut self,
-		id: vuir::InstructionId,
-		block: BlockId,
-		ty: value::Index,
-		fields: &[vuir::StructInitField],
-		span: &Span,
-	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
-		let union_ty = self.cu.values.index_to_value(ty).as_union();
-		let union_ty = union_ty.as_ref();
-
-		if fields.len() != 1 {
-			self.push_error(
-				Diagnostic::error()
-					.with_message("union initialization requires exactly one field")
-					.with_label(Label::primary().with_span(self.diag_span(*span))),
-			);
-			return Err(AnalyzeError::AnalysisFailed);
-		}
-
-		let field = &fields[0];
-		let field_idx = union_ty.field_idx_by_name(&field.name.symbol).ok_or_else(|| {
-			self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
-			AnalyzeError::AnalysisFailed
-		})?;
-
-		let union_field = &union_ty.fields[field_idx];
-		let value = if let Some(field_ty) = union_field.ty {
-			let value = self.resolve_inst(&field.value);
-			let value = self.coerce(block, &field_ty, &value, &field.span)?;
-			Some(value)
-		} else {
-			None
-		};
-
-		let inst = self.inst(block, vtir::Opcode::UnionInit {
-			union_ty: ty,
-			field_idx,
-			value,
-		});
-		self.vuir_map.insert(id, inst);
-		Ok((inst, ControlFlow::May))
 	}
 
 	// Diagnostics

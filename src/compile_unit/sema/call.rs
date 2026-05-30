@@ -306,8 +306,8 @@ impl<'a> Sema<'a> {
 				},
 				// positional: it isn't but the function has var args, assume it is part of its var args then
 				None if func_type.var_args => {
-					// for var args if any coercion is emitted by vuir, just coerce to any, promote_variadic_arg will check errors later
-					self.vuir_map.insert(call_vuir_id, self.cu.values.common.any_t.into());
+					// C varargs are promoted below; keep vuir contextual coercions as noops here
+					self.vuir_map.insert(call_vuir_id, self.cu.values.common.generic_poison_t.into());
 					// resolve var arg now
 					let arg_inst = self
 						.analyze_comptime_block(block, arg.body)?
@@ -588,8 +588,12 @@ impl<'a> Sema<'a> {
 
 					let ty = self.cu.values.substitute_poisons(ty, &substitution_map);
 					if !self.cu.values.type_contains_generic_poison(ty) {
-						self.coerce(block, &expected_ret_ty, &vtir::InstructionRef::Interned(ty), span)?
-							.as_interned()
+						if expected_ret_ty == self.cu.values.common.any_t {
+							ty
+						} else {
+							self.coerce(block, &expected_ret_ty, &vtir::InstructionRef::Interned(ty), span)?
+								.as_interned()
+						}
 					} else {
 						// substitution failed, we can't infer the type
 						ty
@@ -604,6 +608,9 @@ impl<'a> Sema<'a> {
 				if ty == self.cu.values.common.any_t {
 					// any direct coerce
 					expected_ret_ty
+				} else if expected_ret_ty == self.cu.values.common.any_t {
+					// expected `any` here is a return-type inference wildcard, not a runtime value coercion
+					ty
 				} else if ty != expected_ret_ty {
 					// check if the mismatch is a generic conflict (ret ty resolved
 					// from args, but expected ret ty from call site differs)

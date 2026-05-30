@@ -449,6 +449,8 @@ pub enum Key {
 
 	/// Generic type that can be any type possible
 	TypeAny,
+	/// Runtime type-erased pointer plus compiler type identity
+	TypeAnyptr,
 	/// Indicate a unknown generic which should be resolved
 	TypeGenericPoison,
 	/// Per-param generic poison, unique per comptime type param,
@@ -548,6 +550,7 @@ impl Key {
 		matches!(
 			self,
 			Key::TypeAny
+				| Key::TypeAnyptr
 				| Key::TypeAnyint
 				| Key::TypeAnyfloat
 				| Key::TypeUsize
@@ -567,6 +570,7 @@ impl Key {
 				| Key::TypeUnion(..)
 				| Key::TypeSlice(..)
 				| Key::TypeArray(..)
+				| Key::TypeAnyptr
 				| Key::TypeGenericPoison
 				| Key::GenericPoison { .. }
 				| Key::TypeNever
@@ -602,6 +606,7 @@ impl<'store> Display for DisplayIndex<'store> {
 		match key {
 			Key::TypeType => write!(f, "type"),
 			Key::TypeAny => write!(f, "any"),
+			Key::TypeAnyptr => write!(f, "anyptr"),
 			Key::TypeAnyint => write!(f, "anyint"),
 			Key::TypeAnyfloat => write!(f, "anyfloat"),
 			Key::TypeUsize => write!(f, "usize"),
@@ -796,6 +801,7 @@ impl ValueStore {
 				void_t: value_map.entry(&Key::TypeVoid).or_insert_with(Value::none),
 				void_value: value_map.entry(&Key::Void).or_insert_with(Value::none),
 				any_t: value_map.entry(&Key::TypeAny).or_insert_with(Value::none),
+				anyptr_t: value_map.entry(&Key::TypeAnyptr).or_insert_with(Value::none),
 				type_t: value_map.entry(&Key::TypeType).or_insert_with(Value::none),
 				generic_poison_t: value_map.entry(&Key::TypeGenericPoison).or_insert_with(Value::none),
 				never_t: value_map.entry(&Key::TypeNever).or_insert_with(Value::none),
@@ -868,6 +874,7 @@ impl ValueStore {
 		match key {
 			// trivial
 			key @ (Key::TypeAny
+			| Key::TypeAnyptr
 			| Key::TypePtr(..)
 			| Key::TypeInt { .. }
 			| Key::TypeAnyfloat
@@ -1139,6 +1146,7 @@ impl ValueStore {
 		let key = self.index_to_key(i);
 		match key {
 			Key::TypeAny
+			| Key::TypeAnyptr
 			| Key::TypeAnyint
 			| Key::TypeAnyfloat
 			| Key::TypeUsize
@@ -1223,6 +1231,7 @@ impl ValueStore {
 
 			// comptime and runtime
 			Key::TypeBool
+			| Key::TypeAnyptr
 			| Key::TypeInt { .. }
 			| Key::TypeFn(..)
 			| Key::TypeVoid
@@ -1268,6 +1277,11 @@ impl ValueStore {
 				.ptr_width_in_bits
 				.div_exact(8)
 				.map(|i| i * 2) // slice + len (which is ptr length since usize)
+				.unwrap() as _,
+			(Key::TypeAnyptr, _) => target
+				.ptr_width_in_bits
+				.div_exact(8)
+				.map(|i| i * 2) // pointer + compiler-internal type id
 				.unwrap() as _,
 			(key, _) => unreachable!("{key:?}"),
 		}
@@ -1315,6 +1329,7 @@ pub struct CommonValues {
 	pub anyfloat_t: Index,
 	pub void_t: Index,
 	pub any_t: Index,
+	pub anyptr_t: Index,
 	pub type_t: Index,
 	pub never_t: Index,
 	pub generic_poison_t: Index,

@@ -232,17 +232,6 @@ enum ExprResultLocation {
 	/// LHS want to get the address of the RHS
 	GetAddressOf,
 }
-impl ExprResultLocation {
-	pub fn into_inst(self) -> Option<vuir::InstructionRef> {
-		match self {
-			Self::CoerceToTy(ty) => Some(ty),
-			Self::StoreToPtr { ptr, .. } => Some(ptr),
-			Self::StoreToInferredPtr { .. } => None,
-			Self::GetAddressOf | Self::None => None,
-			_ => unreachable!("{:?}", self),
-		}
-	}
-}
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 enum BlockKind {
@@ -467,18 +456,19 @@ impl<'ast> Lowerer<'ast> {
 		}
 	}
 
-	fn coerce_result_location(
+	// Try to perform a coercion for the given `rhs_ctx` to its expected type.
+	fn try_lower_coerce_into_result_loc_expected_ty(
 		&mut self,
 		block_scope: ScopeId,
 		rhs_ctx: ExprResultLocation,
-	) -> ExprResultLocation {
+	) -> Option<vuir::InstructionRef> {
 		match rhs_ctx {
-			ExprResultLocation::CoerceToTy(ty) => ExprResultLocation::CoerceToTy(ty),
+			ExprResultLocation::CoerceToTy(ty) => Some(ty),
 			ExprResultLocation::StoreToPtr { ptr, .. } => {
 				let ty = self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr });
-				ExprResultLocation::CoerceToTy(ty)
+				Some(ty)
 			},
-			_ => ExprResultLocation::None,
+			_ => None,
 		}
 	}
 
@@ -752,6 +742,7 @@ impl<'ast> Lowerer<'ast> {
 			}),
 			ast::Type::Bool => self.cu.values.common.bool_t.into(),
 			ast::Type::Any => self.cu.values.common.any_t.into(),
+			ast::Type::Anyptr => self.cu.values.common.anyptr_t.into(),
 			ast::Type::Type => self.cu.values.common.type_t.into(),
 			ast::Type::Anyint => self.cu.values.common.anyint_t.into(),
 			ast::Type::Anyfloat => self.cu.values.common.anyfloat_t.into(),
@@ -1046,12 +1037,7 @@ impl<'ast> Lowerer<'ast> {
 				};
 
 				// get return type before call instruction as it directly depend on its value
-				let ret_ty = match rhs_ctx {
-					ExprResultLocation::StoreToPtr { ptr, .. } | ExprResultLocation::StoreToInferredPtr { ptr, .. } => {
-						Some(self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr }))
-					},
-					c => c.into_inst(),
-				};
+				let ret_ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx);
 
 				// now emit the future call instruction and lower arguments
 				let call_inst = self.inst_id(block_scope, vuir::Opcode::Invalid);
@@ -1227,10 +1213,10 @@ impl<'ast> Lowerer<'ast> {
 				},
 				ast::Lit::Null | ast::Lit::Char(..) => todo!(),
 			},
-			ast::ExprKind::Undefined => self.inst(block_scope, vuir::Opcode::Undefined {
-				ty: rhs_ctx.into_inst(),
-				span: expr.span,
-			}),
+			ast::ExprKind::Undefined => {
+				let ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx);
+				self.inst(block_scope, vuir::Opcode::Undefined { ty, span: expr.span })
+			},
 
 			// arithmetic
 			ast::ExprKind::Add(&ast::BinOp { lhs, rhs }) => {
@@ -1315,29 +1301,19 @@ impl<'ast> Lowerer<'ast> {
 			},
 			ast::ExprKind::Type(ty) => self.lower_type(block_scope, ty, NamingKind::Anonymous, expr.span),
 			ast::ExprKind::StructInit(init) => {
-				let struct_ty = match rhs_ctx {
-					ExprResultLocation::StoreToPtr { ptr, .. } => self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr }),
-					ExprResultLocation::StoreToInferredPtr { ptr, .. } => {
-						if let Some(explicit_ty) = init.ty {
-							self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
-						} else {
-							self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr })
-						}
-					},
-					_ => {
-						if let Some(ty) = rhs_ctx.into_inst() {
-							ty
-						} else if let Some(explicit_ty) = init.ty {
-							self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
-						} else {
-							self.errors.push(
-								Diagnostic::error()
-									.with_message("cannot infer type of struct initializer")
-									.with_label(Label::primary().with_span(self.diag_span(expr.span))),
-							);
-							self.inst(block_scope, vuir::Opcode::Invalid)
-						}
-					},
+				let struct_ty = {
+					if let Some(explicit_ty) = init.ty {
+						self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
+					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+						ty
+					} else {
+						self.errors.push(
+							Diagnostic::error()
+								.with_message("cannot infer type of struct initializer")
+								.with_label(Label::primary().with_span(self.diag_span(expr.span))),
+						);
+						self.inst(block_scope, vuir::Opcode::Invalid)
+					}
 				};
 
 				let mut fields = BumpVec::with_capacity_in(init.fields.len(), self.instructions_payload_alloc);
@@ -1350,7 +1326,7 @@ impl<'ast> Lowerer<'ast> {
 							field: field.ident.symbol,
 						});
 						let value = self.lower_expr(block_scope, field.value, ExprResultLocation::CoerceToTy(ty));
-						vuir::StructInitField {
+						vuir::AdtInitField {
 							name: field.ident,
 							value,
 							span: field.value.span,
@@ -1358,8 +1334,44 @@ impl<'ast> Lowerer<'ast> {
 					})
 					.collect_into(&mut fields);
 				self.inst(block_scope, vuir::Opcode::AggregateInit {
-					ty: Some(struct_ty),
-					fields: fields.into_bump_slice(),
+					ty: struct_ty,
+					kind: if fields.is_empty() {
+						vuir::AggregateInitKind::Empty
+					} else {
+						vuir::AggregateInitKind::Adt(fields.into_bump_slice())
+					},
+					span: expr.span,
+				})
+			},
+			ast::ExprKind::ArrayInit(init) => {
+				let array_ty = {
+					if let Some(explicit_ty) = init.ty {
+						self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
+					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+						ty
+					} else {
+						self.errors.push(
+							Diagnostic::error()
+								.with_message("cannot infer type of array initializer")
+								.with_label(Label::primary().with_span(self.diag_span(expr.span))),
+						);
+						self.inst(block_scope, vuir::Opcode::Invalid)
+					}
+				};
+
+				let mut elements = BumpVec::with_capacity_in(init.elements.len(), self.instructions_payload_alloc);
+				init.elements
+					.iter()
+					.map(|elem| self.lower_expr(block_scope, elem, ExprResultLocation::None))
+					.collect_into(&mut elements);
+
+				self.inst(block_scope, vuir::Opcode::AggregateInit {
+					ty: array_ty,
+					kind: if elements.is_empty() {
+						vuir::AggregateInitKind::Empty
+					} else {
+						vuir::AggregateInitKind::Array(elements.into_bump_slice())
+					},
 					span: expr.span,
 				})
 			},
@@ -1566,7 +1578,6 @@ impl<'ast> Lowerer<'ast> {
 				if let Some(label) = sw.label {
 					self.check_label_already_defined(block_scope, label);
 				}
-				let switch_rhs_ctx = self.coerce_result_location(block_scope, rhs_ctx);
 
 				let switch_block = self.inst_id(block_scope, vuir::Opcode::Invalid);
 				let switch_scope = self.stack_block(block_scope, BlockKind::Block {
@@ -1584,6 +1595,12 @@ impl<'ast> Lowerer<'ast> {
 				let mut single_cases = BumpVec::new_in(self.instructions_payload_alloc);
 				let mut multi_cases = BumpVec::new_in(self.instructions_payload_alloc);
 
+				// the result location for switch cases is either none or coerced to the switch expected ty
+				let switch_case_rhs_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+					ExprResultLocation::CoerceToTy(ty)
+				} else {
+					ExprResultLocation::None
+				};
 				for case in sw.cases {
 					assert!(!case.patterns.is_empty());
 
@@ -1618,7 +1635,7 @@ impl<'ast> Lowerer<'ast> {
 								*scope
 							};
 
-							let (val, value_span) = self.lower_switch_body(body_scope, case.body, switch_rhs_ctx);
+							let (val, value_span) = self.lower_switch_body(body_scope, case.body, switch_case_rhs_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1646,7 +1663,7 @@ impl<'ast> Lowerer<'ast> {
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-							let (val, value_span) = self.lower_switch_body(*scope, case.body, switch_rhs_ctx);
+							let (val, value_span) = self.lower_switch_body(*scope, case.body, switch_case_rhs_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1672,7 +1689,7 @@ impl<'ast> Lowerer<'ast> {
 				// Lower else body
 				let else_body = if let Some(else_body) = sw.else_body {
 					let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-					let (val, value_span) = self.lower_switch_body(*scope, else_body, switch_rhs_ctx);
+					let (val, value_span) = self.lower_switch_body(*scope, else_body, switch_case_rhs_ctx);
 					if !scope.block(self).ends_with_never(self) {
 						self.inst(*scope, vuir::Opcode::Break {
 							block: switch_block,
@@ -1853,7 +1870,11 @@ impl<'ast> Lowerer<'ast> {
 		rhs_ctx: ExprResultLocation,
 	) -> vuir::InstructionRef {
 		let cond = (self.lower_expr(block_scope, r#if.cond, ExprResultLocation::None), r#if.cond.span);
-		let branch_rhs_ctx = self.coerce_result_location(block_scope, rhs_ctx);
+		let branch_rhs_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+			ExprResultLocation::CoerceToTy(ty)
+		} else {
+			ExprResultLocation::None
+		};
 
 		let branch_block = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
@@ -2468,6 +2489,8 @@ impl<'ast> Lowerer<'ast> {
 				"@forget" => Some(vuir::BuiltinKind::Forget),
 				"@bitcast" => Some(vuir::BuiltinKind::Bitcast),
 				"@slice_copy_nonoverlapping" => Some(vuir::BuiltinKind::SliceCopyNonoverlapping),
+				"@anyptr_is" => Some(vuir::BuiltinKind::AnyptrIs),
+				"@anyptr_as" => Some(vuir::BuiltinKind::AnyptrAs),
 				_ if fun.ident.symbol.starts_with("@") => {
 					self.errors.push(
 						Diagnostic::error()

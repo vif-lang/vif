@@ -64,7 +64,19 @@ pub enum Opcode {
 	/// Initialize a structure, returning its value
 	StructInit {
 		struct_ty: value::Index,
-		fields: Vec<vtir::InstructionRef>,
+		fields: &'static [vtir::InstructionRef],
+	},
+	ArrayInit {
+		array_ty: value::Index,
+		elements: &'static [vtir::InstructionRef],
+	},
+	SliceInit {
+		slice_ty: value::Index,
+		elements: &'static [vtir::InstructionRef],
+	},
+	AnyptrInit {
+		value: vtir::InstructionRef,
+		value_ty: value::Index,
 	},
 	/// Obtain the value of a struct field
 	StructFieldValue {
@@ -239,6 +251,14 @@ pub enum Opcode {
 		src: vtir::InstructionRef,
 		dst_ty: value::Index,
 	},
+	AnyptrIs {
+		value: vtir::InstructionRef,
+		target_ty: value::Index,
+	},
+	AnyptrAs {
+		value: vtir::InstructionRef,
+		target_ty: value::Index,
+	},
 	SliceFromRawParts {
 		slice_ty: value::Index,
 		ptr: vtir::InstructionRef,
@@ -358,6 +378,9 @@ pub fn type_of(
 				Opcode::BitNot { op, .. } => type_of(values, instructions, op),
 
 				Opcode::StructInit { struct_ty, .. } => *struct_ty,
+				Opcode::ArrayInit { array_ty, .. } => *array_ty,
+				Opcode::SliceInit { slice_ty, .. } => *slice_ty,
+				Opcode::AnyptrInit { .. } => values.common.anyptr_t,
 				Opcode::StructFieldValue { ret_ty, .. } | Opcode::StructFieldPtr { ret_ty, .. } => *ret_ty,
 				Opcode::UnionInit { union_ty, .. } => *union_ty,
 				Opcode::UnionTag { tag_ty, .. } => *tag_ty,
@@ -371,6 +394,8 @@ pub fn type_of(
 				Opcode::Zeroed { ty } => *ty,
 				Opcode::Undefined { ty } => *ty,
 				Opcode::BitCast { dst_ty, .. } => *dst_ty,
+				Opcode::AnyptrIs { .. } => values.common.bool_t,
+				Opcode::AnyptrAs { target_ty, .. } => *target_ty,
 				Opcode::SliceFromRawParts { slice_ty, .. } => *slice_ty,
 				Opcode::SlicePtr { ptr_ty, .. } => *ptr_ty,
 				Opcode::SliceLen { .. } => values.common.usize_t,

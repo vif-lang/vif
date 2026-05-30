@@ -615,6 +615,7 @@ pub enum Type {
 	Void,
 	Type,
 	Any,
+	Anyptr,
 	Anyint,
 	Anyfloat,
 	// `!` a.k.a. noreturn

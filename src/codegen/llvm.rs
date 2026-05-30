@@ -877,6 +877,80 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
 				}
 			},
+			vtir::Opcode::ArrayInit { array_ty, elements } => {
+				let array_ty = self.lowerer.lower_type(*array_ty).into_array_type();
+				let mut value = array_ty.get_undef().into();
+				for (i, element) in elements.iter().enumerate() {
+					let element: BasicValueEnum = match self.resolve_inst(element) {
+						AnyValueEnum::FunctionValue(fun) => fun.as_global_value().as_pointer_value().as_basic_value_enum(),
+						value => value.try_into().unwrap(),
+					};
+					value = self.builder().build_insert_value(value, element, i as _, "")?;
+				}
+				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
+			},
+			vtir::Opcode::SliceInit { slice_ty, elements } => {
+				let slice = self.compilation_unit.values.index_to_key(*slice_ty).as_type_slice();
+				let elem_ty: BasicTypeEnum = self.lowerer.lower_type(slice.pointee_ty).try_into().unwrap();
+				let slice_ty_llvm = self.lowerer.lower_type(*slice_ty).into_struct_type();
+				let len_ty = self
+					.lowerer
+					.ctx
+					.ptr_sized_int_type(&self.lowerer.target_machine.get_target_data(), None);
+				let len = len_ty.const_int(elements.len().try_into().unwrap(), false);
+
+				let ptr = if elements.is_empty() {
+					self.lowerer.ctx.ptr_type(AddressSpace::default()).const_null()
+				} else {
+					let array_ty = elem_ty.array_type(elements.len().try_into().unwrap());
+					let mut array_value = array_ty.get_undef().into();
+					for (i, element) in elements.iter().enumerate() {
+						let element: BasicValueEnum = match self.resolve_inst(element) {
+							AnyValueEnum::FunctionValue(fun) => fun.as_global_value().as_pointer_value().as_basic_value_enum(),
+							value => value.try_into().unwrap(),
+						};
+						array_value = self.builder().build_insert_value(array_value, element, i as _, "")?;
+					}
+
+					let array_alloca = self.builder().build_alloca(array_ty, "slice.literal")?;
+					self.builder().build_store(array_alloca, array_value)?;
+					unsafe {
+						self.builder().build_in_bounds_gep(
+							array_ty,
+							array_alloca,
+							&[self.lowerer.ctx.i32_type().const_zero(), self.lowerer.ctx.i32_type().const_zero()],
+							"slice.literal.ptr",
+						)?
+					}
+				};
+
+				let undef = slice_ty_llvm.get_undef();
+				let with_ptr = self.builder().build_insert_value(undef, ptr, 0, "slice.ptr")?;
+				let with_len = self.builder().build_insert_value(with_ptr, len, 1, "slice.len")?;
+				self.vtir_inst_to_llvm_value.insert(*id, with_len.as_any_value_enum());
+			},
+			vtir::Opcode::AnyptrInit { value, value_ty } => {
+				let payload: BasicValueEnum = match self.resolve_inst(value) {
+					AnyValueEnum::FunctionValue(fun) => fun.as_global_value().as_pointer_value().as_basic_value_enum(),
+					value => value.try_into().unwrap(),
+				};
+				let payload_alloca = self.builder().build_alloca(payload.get_type(), "any.payload")?;
+				self.builder().build_store(payload_alloca, payload)?;
+
+				let any_ty = self
+					.lowerer
+					.lower_type(self.compilation_unit.values.common.anyptr_t)
+					.into_struct_type();
+				let type_id_ty = self
+					.lowerer
+					.ctx
+					.ptr_sized_int_type(&self.lowerer.target_machine.get_target_data(), None);
+				let type_id = type_id_ty.const_int((*value_ty).as_u32() as u64, false);
+				let undef = any_ty.get_undef();
+				let with_ptr = self.builder().build_insert_value(undef, payload_alloca, 0, "any.ptr")?;
+				let with_type_id = self.builder().build_insert_value(with_ptr, type_id, 1, "any.type")?;
+				self.vtir_inst_to_llvm_value.insert(*id, with_type_id.as_any_value_enum());
+			},
 			vtir::Opcode::StructFieldValue {
 				struct_ty,
 				field_idx,
@@ -1105,6 +1179,22 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let dst_ty: BasicTypeEnum = self.lowerer.lower_type(*dst_ty).try_into().unwrap();
 				let val = self.builder().build_bit_cast(src, dst_ty, "")?;
 				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+			},
+			vtir::Opcode::AnyptrIs { value, target_ty } => {
+				let value = self.resolve_inst(value).into_struct_value();
+				let runtime_type_id = self.builder().build_extract_value(value, 1, "any.type")?.into_int_value();
+				let target_type_id = runtime_type_id.get_type().const_int((*target_ty).as_u32() as u64, false);
+				let is_target = self
+					.builder()
+					.build_int_compare(inkwell::IntPredicate::EQ, runtime_type_id, target_type_id, "any.is")?;
+				self.vtir_inst_to_llvm_value.insert(*id, is_target.as_any_value_enum());
+			},
+			vtir::Opcode::AnyptrAs { value, target_ty } => {
+				let value = self.resolve_inst(value).into_struct_value();
+				let payload_ptr = self.builder().build_extract_value(value, 0, "any.ptr")?.into_pointer_value();
+				let target_ty: BasicTypeEnum = self.lowerer.lower_type(*target_ty).try_into().unwrap();
+				let loaded = self.builder().build_load(target_ty, payload_ptr, "any.as")?;
+				self.vtir_inst_to_llvm_value.insert(*id, loaded.as_any_value_enum());
 			},
 			vtir::Opcode::Undefined { ty } => {
 				let ty = self.lowerer.lower_type(*ty);
@@ -1662,6 +1752,13 @@ impl<'ctx> Lowerer<'ctx> {
 					let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
 					let len_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
 					self.ctx.struct_type(&[ptr_type.into(), len_type.into()], false).as_any_type_enum()
+				},
+				(value::Key::TypeAnyptr, _) => {
+					let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
+					let type_id_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
+					self.ctx
+						.struct_type(&[ptr_type.into(), type_id_type.into()], false)
+						.as_any_type_enum()
 				},
 				(value::Key::TypeArray(array), _) => {
 					let elem_ty: BasicTypeEnum = self.lower_type(array.elem_ty).try_into().unwrap();

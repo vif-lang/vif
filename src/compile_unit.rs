@@ -963,7 +963,9 @@ pub const target: Target = Target {{
 		if let Some(main_decl_id) = main_fn_decl_id {
 			let compilation_unit = self.clone();
 			rayon::spawn_fifo(move || {
-				let decl_value = compilation_unit.get_or_analyze_decl_value(main_decl_id).unwrap();
+				let Ok(decl_value) = compilation_unit.get_or_analyze_decl_value(main_decl_id) else {
+					return; // TODO(zino)
+				};
 				let fun_decl = decl_value.unwrap();
 				let fun_decl_key = compilation_unit.values.index_to_key(fun_decl).as_fn_decl();
 				let fun_ty = fun_decl_key.ty;

@@ -113,6 +113,7 @@ struct CommonTypes {
 	void_ty: &'static Type,
 	type_ty: &'static Type,
 	any_ty: &'static Type,
+	anyptr_ty: &'static Type,
 	anyint_ty: &'static Type,
 	anyfloat_ty: &'static Type,
 	never_ty: &'static Type,
@@ -179,6 +180,7 @@ impl Parser {
 			void_ty: data.push(&Type::Void),
 			type_ty: data.push(&Type::Type),
 			any_ty: data.push(&Type::Any),
+			anyptr_ty: data.push(&Type::Anyptr),
 			anyint_ty: data.push(&Type::Anyint),
 			anyfloat_ty: data.push(&Type::Anyfloat),
 			never_ty: data.push(&Type::Never),
@@ -1474,6 +1476,10 @@ impl Parser {
 			TokenKind::TyAny => {
 				self.offset += 1;
 				ExprKind::Type(self.common_types.any_ty)
+			},
+			TokenKind::TyAnyptr => {
+				self.offset += 1;
+				ExprKind::Type(self.common_types.anyptr_ty)
 			},
 			TokenKind::TyAnyint => {
 				self.offset += 1;
