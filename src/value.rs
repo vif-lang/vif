@@ -264,8 +264,8 @@ impl TypeUnion {
 	pub fn field_idx_by_name(
 		&self,
 		name: &str,
-	) -> Option<usize> {
-		self.fields.iter().position(|f| &*f.name == name)
+	) -> Option<u32> {
+		self.fields.iter().position(|f| &*f.name == name).map(|i| i as u32)
 	}
 }
 
@@ -413,7 +413,7 @@ pub enum Key {
 	Ptr(Ptr),
 	Fn(FnKey),
 	EnumTag {
-		ty: Index,
+		enum_ty: Index,
 		val: Index,
 	},
 	Aggregate {
@@ -423,6 +423,11 @@ pub enum Key {
 	NullPtr,
 	Void,
 	Unreachable,
+	Union {
+		ty: Index,
+		tag: Option<Index>,
+		payload: Option<Index>,
+	},
 
 	// Types
 	TypeInt {
@@ -446,6 +451,7 @@ pub enum Key {
 	TypePtr(TypePtr),
 	TypeSlice(TypeSlice),
 	TypeArray(TypeArray),
+	TypeNullPtr,
 
 	/// Generic type that can be any type possible
 	TypeAny,
@@ -461,12 +467,14 @@ pub enum Key {
 	},
 	TypeType,
 	TypeNever,
+	TypeEnumLiteral,
 
 	// Misc
 	DeclRef {
 		vuir: vuir::InstructionId,
 	},
 	FnDecl(FnDecl),
+	EnumLiteral(Intern<str>),
 }
 impl Key {
 	pub fn as_type_fn(&self) -> &TypeFn {
@@ -572,8 +580,11 @@ impl Key {
 				| Key::TypeArray(..)
 				| Key::TypeAnyptr
 				| Key::TypeGenericPoison
-				| Key::GenericPoison { .. }
+				| Key::TypeEnumLiteral
 				| Key::TypeNever
+				| Key::TypeNullPtr
+				| Key::TypeEnumLiteral
+				| Key::GenericPoison { .. }
 		)
 	}
 
@@ -591,6 +602,28 @@ impl Key {
 				| Key::TypeUsize
 		)
 	}
+}
+
+pub struct Layout {
+	pub size: u64,
+	pub align: u64,
+}
+impl Layout {
+	/// A zero-sized layout but well-aligned (align of 1)
+	pub const fn zeroed() -> Self {
+		Self { size: 0, align: 1 }
+	}
+}
+
+pub struct UnionLayout {
+	pub union_layout: Layout,
+	pub tag: Layout,
+	pub payload: Layout,
+	/// To minimize padding due to payload/tag alignement store the most aligned field
+	/// for later codegen to place tag/payload accordingly
+	pub most_aligned_field: (usize, Layout),
+	/// Padding inserted after tag and payload to match `union_layout` align
+	pub trailing_padding: u64,
 }
 
 pub struct DisplayIndex<'store> {
@@ -807,6 +840,9 @@ impl ValueStore {
 				never_t: value_map.entry(&Key::TypeNever).or_insert_with(Value::none),
 				usize_t: value_map.entry(&Key::TypeUsize).or_insert_with(Value::none),
 				isize_t: value_map.entry(&Key::TypeIsize).or_insert_with(Value::none),
+				u16_t: value_map
+					.entry(&Key::TypeInt { signed: false, bits: 16 })
+					.or_insert_with(Value::none),
 				u64_t: value_map
 					.entry(&Key::TypeInt { signed: false, bits: 64 })
 					.or_insert_with(Value::none),
@@ -824,6 +860,8 @@ impl ValueStore {
 				f64_t: value_map.entry(&Key::TypeF64).or_insert_with(Value::none),
 				f128_t: value_map.entry(&Key::TypeF128).or_insert_with(Value::none),
 				bool_t: value_map.entry(&Key::TypeBool).or_insert_with(Value::none),
+				enum_literal_t: value_map.entry(&Key::TypeEnumLiteral).or_insert_with(Value::none),
+				nullptr_t: value_map.entry(&Key::TypeNullPtr).or_insert_with(Value::none),
 				unreachable_value: value_map.entry(&Key::Unreachable).or_insert_with(Value::none),
 				true_value: value_map.entry(&Key::Bool(true)).or_insert_with(Value::none),
 				false_value: value_map.entry(&Key::Bool(false)).or_insert_with(Value::none),
@@ -894,6 +932,9 @@ impl ValueStore {
 			| Key::TypeArray(..)
 			| Key::TypeFn(..)
 			| Key::TypeNever
+			| Key::TypeEnum { .. }
+			| Key::TypeEnumLiteral
+			| Key::TypeNullPtr
 			| Key::Ptr(..)
 			| Key::Int { .. }
 			| Key::Float { .. }
@@ -902,11 +943,12 @@ impl ValueStore {
 			| Key::FnDecl(..)
 			| Key::EnumTag { .. }
 			| Key::Aggregate { .. }
+			| Key::Union { .. }
 			| Key::NullPtr
 			| Key::Void
 			| Key::Unreachable
 			| Key::DeclRef { .. }
-			| Key::TypeEnum { .. }
+			| Key::EnumLiteral(..)
 			| Key::Undefined { .. }) => self.value_map.entry(key).or_insert_with(Value::none),
 
 			// non-trivial
@@ -942,6 +984,19 @@ impl ValueStore {
 			ty,
 			kind: PtrKind::Value(value),
 		}))
+	}
+
+	pub fn intern_enum_tag_from_field_idx(
+		&self,
+		enum_ty: Index,
+		i: u32,
+	) -> Index {
+		let r#enum = self.index_to_value(enum_ty).as_enum();
+		let val = r#enum.fields[i as usize].value;
+		self.intern_trivial(&Key::EnumTag {
+			enum_ty: r#enum.tag_ty,
+			val,
+		})
 	}
 
 	pub fn display_index(
@@ -1168,6 +1223,8 @@ impl ValueStore {
 			| Key::TypeArray(..)
 			| Key::TypeNever
 			| Key::TypeGenericPoison
+			| Key::TypeEnumLiteral
+			| Key::TypeNullPtr
 			| Key::GenericPoison { .. } => self.common.type_t,
 			Key::Ptr(ptr) => ptr.ty,
 			Key::Fn(fun) => fun.ty,
@@ -1176,13 +1233,16 @@ impl ValueStore {
 			Key::Str { slice_ty: ty, .. } => *ty,
 			Key::Bool(_) => self.common.bool_t,
 			Key::FnDecl(decl) => decl.ty,
-			Key::EnumTag { ty, .. } => *ty,
+			Key::EnumTag { enum_ty: ty, .. } => *ty,
 			Key::Undefined { ty } => *ty,
 			Key::Aggregate { ty, .. } => *ty,
 			Key::Void => self.common.void_t,
 			Key::Unreachable => self.common.never_t,
-			Key::DeclRef { .. } | Key::NullPtr => {
-				unreachable!("instruction {:?} is untyped", i)
+			Key::Union { ty, .. } => *ty,
+			Key::EnumLiteral(..) => self.common.enum_literal_t,
+			Key::NullPtr => self.common.nullptr_t,
+			Key::DeclRef { .. } => {
+				unreachable!("value {} is untyped", self.display_index(i))
 			},
 		}
 	}
@@ -1263,30 +1323,6 @@ impl ValueStore {
 		}
 	}
 
-	pub fn type_byte_size(
-		&self,
-		target: &ResolvedTargetInfo,
-		ty: Index,
-	) -> u32 {
-		// TODO(zino): proper ABI management of size ofs with target
-		match self.index_to_key_value(ty) {
-			(Key::TypeBool, _) => 1,
-			(Key::TypeInt { bits, .. }, _) => bits.div_exact(8).unwrap() as _,
-			(Key::TypePtr(_) | Key::TypeUsize | Key::TypeIsize, _) => target.ptr_width_in_bits.div_exact(8).unwrap() as _,
-			(Key::TypeSlice(_), _) => target
-				.ptr_width_in_bits
-				.div_exact(8)
-				.map(|i| i * 2) // slice + len (which is ptr length since usize)
-				.unwrap() as _,
-			(Key::TypeAnyptr, _) => target
-				.ptr_width_in_bits
-				.div_exact(8)
-				.map(|i| i * 2) // pointer + compiler-internal type id
-				.unwrap() as _,
-			(key, _) => unreachable!("{key:?}"),
-		}
-	}
-
 	pub fn type_bit_size(
 		&self,
 		ty: Index,
@@ -1302,6 +1338,144 @@ impl ValueStore {
 			},
 			(Key::TypeBool, _) => 1,
 			(key, _) => unreachable!("{key:?}"),
+		}
+	}
+
+	pub fn type_layout(
+		&self,
+		target: &ResolvedTargetInfo,
+		ty: Index,
+	) -> Layout {
+		// TODO(zino): proper ABI management of size ofs with target
+		match self.index_to_key_value(ty) {
+			(Key::TypeBool, _) => Layout { size: 1, align: 1 },
+			(Key::TypeInt { bits, .. }, _) => {
+				// TODO(zino): revisit
+				let size = u64::from(*bits).div_ceil(8);
+				Layout {
+					size,
+					align: size.next_power_of_two(),
+				}
+			},
+			(Key::TypeF16, _) => Layout { size: 2, align: 2 },
+			(Key::TypeF32, _) => Layout { size: 4, align: 4 },
+			(Key::TypeF64, _) => Layout { size: 8, align: 8 },
+			(Key::TypeF128, _) => Layout { size: 16, align: 16 },
+			(Key::TypePtr(_) | Key::TypeUsize | Key::TypeIsize, _) => self.type_ptr_layout(target, ty),
+			(Key::TypeArray(array), _) => {
+				let elem = self.type_layout(target, array.elem_ty);
+				Layout {
+					size: elem.size.next_multiple_of(elem.align) * array.len,
+					align: elem.align,
+				}
+			},
+			(Key::TypeSlice(_), _) => {
+				// TODO(zino): slice as ptr
+				let ptr_size = target.ptr_width_in_bits.div_exact(8).unwrap() as u64;
+				Layout {
+					// slice + len (which is ptr length since usize)
+					size: ptr_size * 2,
+					align: ptr_size,
+				}
+			},
+			(Key::TypeAnyptr, _) => {
+				let ptr_size = target.ptr_width_in_bits.div_exact(8).unwrap() as u64;
+				// pointer + compiler-internal type id (usize) TODO(zino)
+				Layout {
+					size: ptr_size * 2,
+					align: ptr_size,
+				}
+			},
+			(Key::TypeStruct(..), Value::Struct(r#struct)) => match &r#struct.layout {
+				StructLayout::Standard => {
+					let mut size = 0u64;
+					let mut align = 1u64;
+					for field in r#struct.fields {
+						let field = self.type_layout(target, field.ty);
+						size = size.next_multiple_of(field.align);
+						size += field.size;
+						align = align.max(field.align);
+					}
+					Layout {
+						size: size.next_multiple_of(align),
+						align,
+					}
+				},
+				StructLayout::Packed { storage_bits, .. } => Layout {
+					size: u64::from(*storage_bits).div_ceil(8),
+					align: 1,
+				},
+			},
+			(Key::TypeEnum(..), Value::Enum(r#enum)) => self.type_layout(target, r#enum.tag_ty),
+			(Key::TypeUnion(..), Value::Union(_)) => {
+				// TODO(zino): this can become a bottleneck, we could cache it in the union
+				self.type_union_layout(target, ty).union_layout
+			},
+			(key, _) => unreachable!("{key:?}"),
+		}
+	}
+
+	pub fn type_ptr_layout(
+		&self,
+		target: &ResolvedTargetInfo,
+		ty: Index,
+	) -> Layout {
+		let size = target.ptr_width_in_bits.div_exact(8).unwrap() as _;
+		Layout { size, align: size }
+	}
+
+	pub fn type_union_layout(
+		&self,
+		target: &ResolvedTargetInfo,
+		ty: Index,
+	) -> UnionLayout {
+		let r#union = self.index_to_value(ty).as_union();
+		let mut payload_size = 0;
+		let mut payload_align = 1;
+		let mut most_aligned_field = 0;
+		let mut most_aligned_field_layout = Layout { size: 0, align: 0 };
+		for (i, field) in union.fields.iter().enumerate().filter(|(_, field)| field.ty.is_some()) {
+			let field_ty = field.ty.unwrap();
+			let field_ty_layout = self.type_layout(target, field_ty);
+			if field_ty_layout.size == 0 {
+				continue;
+			}
+			payload_size = payload_size.max(field_ty_layout.size);
+			if field_ty_layout.align >= payload_align {
+				payload_align = field_ty_layout.align;
+				most_aligned_field = i;
+				most_aligned_field_layout = field_ty_layout;
+			}
+		}
+
+		let tag = union
+			.tag_ty
+			.map(|tag_ty| self.type_layout(target, tag_ty))
+			.unwrap_or(Layout::zeroed());
+		let abi_align = tag.align.max(payload_align);
+		let content_end = if tag.size == 0 {
+			payload_size
+		} else if payload_size == 0 {
+			tag.size
+		} else if tag.align >= payload_align {
+			tag.size.next_multiple_of(payload_align) + payload_size
+		} else {
+			payload_size.next_multiple_of(tag.align) + tag.size
+		};
+		let abi_size = content_end.next_multiple_of(abi_align);
+
+		UnionLayout {
+			union_layout: Layout {
+				size: abi_size,
+				align: abi_align,
+			},
+			payload: Layout {
+				size: payload_size,
+				align: payload_align,
+			},
+			most_aligned_field: (most_aligned_field, most_aligned_field_layout),
+			tag,
+			trailing_padding: abi_size - content_end,
 		}
 	}
 
@@ -1335,6 +1509,7 @@ pub struct CommonValues {
 	pub generic_poison_t: Index,
 	pub usize_t: Index,
 	pub isize_t: Index,
+	pub u16_t: Index,
 	pub u64_t: Index,
 	pub i64_t: Index,
 	pub u32_t: Index,
@@ -1344,6 +1519,8 @@ pub struct CommonValues {
 	pub f64_t: Index,
 	pub f128_t: Index,
 	pub bool_t: Index,
+	pub enum_literal_t: Index,
+	pub nullptr_t: Index,
 	pub unreachable_value: Index,
 	pub void_value: Index,
 	pub true_value: Index,

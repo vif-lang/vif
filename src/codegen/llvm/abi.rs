@@ -17,7 +17,11 @@ use crate::{
 	},
 };
 
-pub struct ArgAbi {}
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum ParamMode {
+	Direct,
+	ByRef,
+}
 
 #[derive(Eq, PartialEq)]
 pub enum RetMode<'ctx> {
@@ -30,6 +34,7 @@ pub enum RetMode<'ctx> {
 pub struct FnAbi<'ctx> {
 	pub ret_mode: RetMode<'ctx>,
 	pub params: Vec<BasicMetadataTypeEnum<'ctx>>,
+	pub param_modes: Vec<ParamMode>,
 	pub ret_ty: AnyTypeEnum<'ctx>,
 }
 
@@ -40,6 +45,9 @@ pub fn fn_returns_by_ref_in_first_param<'ctx>(
 	fn_ty: &TypeFn,
 ) -> bool {
 	let ret_ty = lowerer.lower_type(fn_ty.ret_ty);
+	if lowerer.type_is_by_ref(fn_ty.ret_ty) {
+		return true;
+	}
 	match ret_ty {
 		// returning aggregates is a very bad idea in LLVM, it explodes its passes time
 		// force the usage of sret + hidden fn arg instead
@@ -59,8 +67,9 @@ pub fn compute_fn_abi<'ctx>(
 		RetMode::Direct
 	};
 
-	let params = {
+	let (params, param_modes) = {
 		let mut params = Vec::with_capacity(fn_ty.params.len());
+		let mut param_modes = Vec::with_capacity(fn_ty.params.len());
 
 		// if in sret mode, add the return type as first param
 		if matches!(ret_mode, RetMode::SretFirstParam(_)) {
@@ -73,11 +82,19 @@ pub fn compute_fn_abi<'ctx>(
 			let concrete_ty = if i < fn_ty.params.len() { fn_ty.params[i] } else { *declared_param };
 
 			let llvm_ty = lowerer.lower_type(concrete_ty);
+			let uses_external_abi = matches!(fn_ty.callconv, Some(CallingConvention::C | CallingConvention::Winapi));
+			let mode = if !uses_external_abi && lowerer.type_is_by_ref(concrete_ty) {
+				ParamMode::ByRef
+			} else {
+				ParamMode::Direct
+			};
 
 			// Win64 ABI: for `callconv(.c)` functions, struct params are lowered by size:
 			//   <= 64 bits → integer register (i8/i16/i32/i64)
 			//   >  64 bits → caller allocates, passes pointer (byval semantics)
-			let ty: BasicMetadataTypeEnum = if fn_ty.callconv == Some(CallingConvention::C) {
+			let ty: BasicMetadataTypeEnum = if mode == ParamMode::ByRef {
+				lowerer.ctx.ptr_type(AddressSpace::default()).into()
+			} else if fn_ty.callconv == Some(CallingConvention::C) {
 				if let AnyTypeEnum::StructType(st) = llvm_ty {
 					let bits = lowerer.target_machine.get_target_data().get_bit_size(&st);
 					match bits {
@@ -95,13 +112,15 @@ pub fn compute_fn_abi<'ctx>(
 			};
 
 			params.push(ty);
+			param_modes.push(mode);
 		}
 
-		params
+		(params, param_modes)
 	};
 
 	FnAbi {
 		params,
+		param_modes,
 		ret_ty: match ret_mode {
 			RetMode::Direct => ret_ty,
 			RetMode::SretFirstParam(_) => lowerer.ctx.void_type().as_any_type_enum(),

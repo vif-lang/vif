@@ -919,8 +919,8 @@ impl<'a> Sema<'a> {
 				// ensure preconditions
 				let value = self.resolve_inst(&func_vuir_info.params[0].as_ref());
 				let src_ty = self.type_of(&value);
-				let src_byte_size = self.cu.values.type_byte_size(&self.cu.resolved_target, src_ty);
-				let dst_byte_size = self.cu.values.type_byte_size(&self.cu.resolved_target, fun_ty.ret_ty);
+				let src_byte_size = self.cu.values.type_layout(&self.cu.resolved_target, src_ty).size;
+				let dst_byte_size = self.cu.values.type_layout(&self.cu.resolved_target, fun_ty.ret_ty).size;
 				if src_byte_size != dst_byte_size {
 					self.push_error(
 						Diagnostic::error()
@@ -1496,7 +1496,7 @@ impl<'a> Sema<'a> {
 				decls,
 				captures,
 			} => {
-				let (union_key, union_idx) = {
+				let (captures, union_key, union_idx) = {
 					let captures = self.resolve_vuir_captures(block, captures)?;
 					let union_key = value::Key::TypeUnion(value::NamespaceType {
 						inst: GlobalVuirInstructionId {
@@ -1506,7 +1506,7 @@ impl<'a> Sema<'a> {
 						captures,
 					});
 					let union_idx = self.cu.values.intern_non_trivial(&union_key, value::Value::none());
-					(union_key, union_idx)
+					(captures, union_key, union_idx)
 				};
 
 				let namespace = self
@@ -1544,19 +1544,7 @@ impl<'a> Sema<'a> {
 					});
 				}
 
-				// Determine tag type for tagged unions
-				// tag: None = bare, Some(None) = auto-tagged, Some(Some(ref, span)) = explicit
-				let tag_ty = match tag {
-					None => None,
-					Some(None) => {
-						let bits = fields.len().next_power_of_two().trailing_zeros().max(1).min(u16::MAX as u32) as u16;
-						Some(self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits }))
-					},
-					Some(Some((tag_ref, tag_span))) => {
-						let tag_ty = self.resolve_type(*block, tag_ref, tag_span)?;
-						Some(tag_ty)
-					},
-				};
+				let union_name = self.make_type_name(*block, id, *naming);
 
 				// Resolve field types
 				let fields = fields
@@ -1586,9 +1574,56 @@ impl<'a> Sema<'a> {
 					})
 					.try_collect::<Vec<_>>()?;
 
+				// Determine tag type for tagged unions
+				// tag: None = bare, Some(None) = auto-tagged enum, Some(Some(ref, span)) = explicit
+				let tag_ty = match tag {
+					None => None,
+					Some(None) => {
+						let bits = fields.len().next_power_of_two().trailing_zeros().max(1).min(u16::MAX as u32) as u16;
+						let tag_ty = self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits });
+						let enum_name = Intern::from(format!("{union_name}_AutoEnumTag").as_str());
+						let enum_fields = self
+							.cu
+							.values
+							.alloc_slice_fill_iter(fields.iter().enumerate().map(|(idx, field)| EnumField {
+								name: field.name,
+								value: self.cu.values.intern_trivial(&value::Key::Int {
+									ty: tag_ty,
+									value: Anyint::from(idx).into(),
+								}),
+							}));
+						let enum_ty = self.cu.values.value_allocate(TypeEnum {
+							name: enum_name,
+							tag_ty,
+							fields: enum_fields,
+							linear: *linear,
+						});
+						let enum_key = value::Key::TypeEnum(value::NamespaceType {
+							inst: GlobalVuirInstructionId {
+								module: self.module,
+								inst: id,
+							},
+							captures,
+						});
+						Some(self.cu.values.intern_non_trivial(&enum_key, value::Value::Enum(enum_ty)))
+					},
+					Some(Some((tag_ref, tag_span))) => {
+						let tag_ty = self.resolve_type(*block, tag_ref, tag_span)?;
+						if !matches!(self.cu.values.index_to_key(tag_ty), value::Key::TypeEnum(..)) {
+							self.push_error(
+								Diagnostic::error()
+									.with_message("union tag type must be an enum")
+									.with_label(Label::primary().with_span(self.diag_span(*tag_span))),
+							);
+							return Err(AnalyzeError::AnalysisFailed);
+						}
+						Some(tag_ty)
+					},
+				};
+
 				let fields_static = self.cu.values.alloc_slice(&fields);
 				let union_ty = self.cu.values.value_allocate(TypeUnion {
-					name: self.make_type_name(*block, id, *naming),
+					name: union_name,
 					tag_ty,
 					fields: fields_static,
 					namespace,
@@ -1711,7 +1746,7 @@ impl<'a> Sema<'a> {
 							unreachable!();
 						};
 
-						let value::Key::EnumTag { ty: enum_ty, val } = self.cu.values.index_to_key(callconv_value) else {
+						let value::Key::EnumTag { enum_ty, val } = self.cu.values.index_to_key(callconv_value) else {
 							self.push_error(
 								Diagnostic::error()
 									.with_message("`#callconv` expression must evaluate to a `CallingConvention` variant")
@@ -2095,6 +2130,7 @@ impl<'a> Sema<'a> {
 						let vtir::Opcode::Store { src: value, .. } = self.instructions[store_inst.as_id().unwrap()] else {
 							unreachable!()
 						};
+
 						self.try_resolve_comptime_value(&value).is_some()
 					} {
 					let (store_inst, store_span) = potential_comptime_alloc.stores[0];
@@ -2118,6 +2154,14 @@ impl<'a> Sema<'a> {
 						vtir::InstructionRef::Interned(ptr)
 					}
 				} else {
+					if is_comptime {
+						self.push_error(
+							Diagnostic::error()
+								.with_message("comptime initializer could not be resolved at compile time")
+								.with_label(Label::primary().with_span(self.diag_span(*span))),
+						);
+						return Err(AnalyzeError::AnalysisFailed);
+					}
 					self.ensure_type_exist_in_runtime(&ty, span)?;
 					let ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
 						pointee_ty: ty,
@@ -2444,7 +2488,7 @@ impl<'a> Sema<'a> {
 						let u = self.cu.values.index_to_value(inst).as_union();
 						let u = u.as_ref();
 						if let Some(idx) = u.field_idx_by_name(field) {
-							if let Some(field_ty) = u.fields[idx].ty {
+							if let Some(field_ty) = u.fields[idx as usize].ty {
 								vtir::InstructionRef::Interned(field_ty)
 							} else {
 								vtir::InstructionRef::Interned(self.cu.values.common.void_t)
@@ -2811,14 +2855,13 @@ impl<'a> Sema<'a> {
 				// If the operand is comptime, resolve the switch at compile time
 				if let Some(operand_val) = self.try_resolve_comptime_value(&operand_ref) {
 					let operand_ty = self.type_of(&operand_ref);
-					let coerce_span = Span::default();
 
 					// Find the matching case
 					let mut matched_body = None;
 
 					for case in single_cases.iter() {
-						let item = self.resolve_inst(&case.item);
-						let item = self.coerce(block, &operand_ty, &item, &coerce_span)?;
+						let item = self.resolve_inst(&case.pattern);
+						let item = self.coerce(block, &operand_ty, &item, &case.pattern_span)?;
 						if self.try_resolve_comptime_value(&item) == Some(operand_val) {
 							matched_body = Some(case.body);
 							break;
@@ -2829,7 +2872,7 @@ impl<'a> Sema<'a> {
 						for case in multi_cases.iter() {
 							for item_ref in case.items.iter() {
 								let item = self.resolve_inst(item_ref);
-								let item = self.coerce(block, &operand_ty, &item, &coerce_span)?;
+								let item = self.coerce(block, &operand_ty, &item, &case.patterns_span)?;
 								if self.try_resolve_comptime_value(&item) == Some(operand_val) {
 									matched_body = Some(case.body);
 									break;
@@ -2850,13 +2893,14 @@ impl<'a> Sema<'a> {
 					return Ok((inst, ControlFlow::May));
 				}
 
+				// runtime switch
+
 				let operand_ty = self.type_of(&operand_ref);
-				let coerce_span = Span::default();
 
 				// Process single-pattern cases
 				for case in single_cases.iter() {
-					let item = self.resolve_inst(&case.item);
-					let item = self.coerce(block, &operand_ty, &item, &coerce_span)?;
+					let pattern = self.resolve_inst(&case.pattern);
+					let pattern = self.coerce(block, &operand_ty, &pattern, &case.pattern_span)?;
 					let body = {
 						let child = self.child_block(block);
 						let expected_len = self.blocks.len();
@@ -2867,7 +2911,7 @@ impl<'a> Sema<'a> {
 						self.unstack_block(child).instructions.into_bump_slice()
 					};
 					vtir_cases.push(vtir::SwitchCase {
-						items: self.instructions_payload_alloc.alloc_slice_copy(&[item]),
+						items: self.instructions_payload_alloc.alloc_slice_copy(&[pattern]),
 						body,
 					});
 				}
@@ -2877,7 +2921,7 @@ impl<'a> Sema<'a> {
 					let mut items = BumpVec::new_in(self.instructions_payload_alloc);
 					for item_ref in case.items.iter() {
 						let item = self.resolve_inst(item_ref);
-						let item = self.coerce(block, &operand_ty, &item, &coerce_span)?;
+						let item = self.coerce(block, &operand_ty, &item, &case.patterns_span)?;
 						items.push(item);
 					}
 					let body = {
@@ -2940,7 +2984,7 @@ impl<'a> Sema<'a> {
 			},
 			vuir::Opcode::SwitchCapture {
 				switch_operand,
-				case_item,
+				case_pattern,
 				span,
 			} => {
 				let union_val = self.resolve_inst(switch_operand);
@@ -2948,26 +2992,31 @@ impl<'a> Sema<'a> {
 
 				let (key, value_ref) = self.cu.values.index_to_key_value(union_ty);
 				match (key, value_ref) {
-					(value::Key::TypeUnion(_), value::Value::Union(u)) => {
-						let u = u.as_ref();
-						let tag_ty = u.tag_ty.expect("switch capture requires tagged union");
-						// Resolve the case item to get the field index
-						let item = self.resolve_inst(case_item);
-						let item_interned = item.as_interned();
-						let tag_val = match self.cu.values.index_to_key(item_interned) {
-							value::Key::EnumTag { val, .. } => *val,
-							_ => item_interned,
+					(value::Key::TypeUnion(_), value::Value::Union(u)) if let Some(tag_ty) = u.tag_ty => {
+						let field_idx = {
+							let pattern = self.resolve_inst(case_pattern);
+							let pattern_enum_tag = self.coerce(block, &tag_ty, &pattern, span)?.as_interned();
+							let pattern_value = match self.cu.values.index_to_key(pattern_enum_tag) {
+								value::Key::EnumTag { val, .. } => *val,
+								_ => unreachable!(),
+							};
+							let Some(field_idx) = u.fields.iter().enumerate().find_map(|(field_idx, _)| {
+								let field_tag = self.cu.values.intern_enum_tag_from_field_idx(tag_ty, field_idx as u32);
+								let field_value = match self.cu.values.index_to_key(field_tag) {
+									value::Key::EnumTag { val, .. } => *val,
+									_ => unreachable!(),
+								};
+								(field_value == pattern_value).then_some(field_idx)
+							}) else {
+								self.push_error(
+									Diagnostic::error()
+										.with_message("switch pattern does not name a variant of this union")
+										.with_label(Label::primary().with_span(self.diag_span(*span))),
+								);
+								return Err(AnalyzeError::AnalysisFailed);
+							};
+							field_idx
 						};
-						// Find the field index by comparing tag values
-						let field_idx = (0..u.fields.len())
-							.find(|&i| {
-								let expected = self.cu.values.intern_trivial(&value::Key::Int {
-									ty: tag_ty,
-									value: Anyint::from(i).into(),
-								});
-								expected == tag_val
-							})
-							.expect("switch capture: no matching field");
 
 						let field = &u.fields[field_idx];
 						let ret_ty = field.ty.unwrap_or(self.cu.values.common.void_t);
@@ -3523,26 +3572,21 @@ impl<'a> Sema<'a> {
 					},
 					(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
 						let field_idx = e.field_idx_by_name(field).ok_or_else(|| {
-							self.diag_field_not_found(field, &lhs_ty, field_span);
+							self.diag_field_not_found(field, &lhs, field_span);
 							AnalyzeError::AnalysisFailed
 						})?;
 						let tag = value::Key::EnumTag {
-							ty: lhs,
+							enum_ty: lhs,
 							val: e.fields[field_idx].value,
 						};
 						vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&tag))
 					},
 					(value::Key::TypeUnion(_), value::Value::Union(u)) => {
 						let u = u.as_ref();
-						// Check if it's a union field (tag value)
+						// check if it's a union field (tag value)
 						if let Some(field_idx) = u.field_idx_by_name(field) {
 							if let Some(tag_ty) = u.tag_ty {
-								let tag_val = self.cu.values.intern_trivial(&value::Key::Int {
-									ty: tag_ty,
-									value: Anyint::from(field_idx).into(),
-								});
-								let tag = value::Key::EnumTag { ty: lhs, val: tag_val };
-								vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&tag))
+								vtir::InstructionRef::Interned(self.cu.values.intern_enum_tag_from_field_idx(tag_ty, field_idx))
 							} else {
 								self.push_error(
 									Diagnostic::error()
@@ -3714,7 +3758,7 @@ impl<'a> Sema<'a> {
 							AnalyzeError::AnalysisFailed
 						})?;
 						let tag = value::Key::EnumTag {
-							ty: lhs,
+							enum_ty: lhs,
 							val: e.fields[field_idx].value,
 						};
 						let value = self.cu.values.intern_trivial(&tag);
@@ -3726,12 +3770,8 @@ impl<'a> Sema<'a> {
 						// Check if it's a union field (tag value)
 						if let Some(field_idx) = u.field_idx_by_name(field) {
 							if let Some(tag_ty) = u.tag_ty {
-								let tag_val = self.cu.values.intern_trivial(&value::Key::Int {
-									ty: tag_ty,
-									value: Anyint::from(field_idx).into(),
-								});
-								let tag = value::Key::EnumTag { ty: lhs, val: tag_val };
-								vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&tag))
+								let tag = self.cu.values.intern_enum_tag_from_field_idx(tag_ty, field_idx);
+								vtir::InstructionRef::Interned(self.cu.values.intern_value_ptr(tag))
 							} else {
 								self.push_error(
 									Diagnostic::error()
@@ -3916,7 +3956,7 @@ impl<'a> Sema<'a> {
 			AnalyzeError::AnalysisFailed
 		})?;
 
-		let union_field = &union_ty.fields[field_idx];
+		let union_field = &union_ty.fields[field_idx as usize];
 		let value = if let Some(field_ty) = union_field.ty {
 			let value = self.resolve_inst(&field.value);
 			let value = self.coerce(block, &field_ty, &value, &field.span)?;
@@ -3925,11 +3965,30 @@ impl<'a> Sema<'a> {
 			None
 		};
 
-		let inst = self.inst(block, vtir::Opcode::UnionInit {
-			union_ty: ty,
-			field_idx,
-			value,
-		});
+		let inst = match value {
+			Some(value) if let Some(payload) = self.try_resolve_comptime_value(&value) => {
+				let tag = union_ty
+					.tag_ty
+					.map(|tag_ty| self.cu.values.intern_enum_tag_from_field_idx(tag_ty, field_idx));
+				vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Union {
+					ty,
+					tag,
+					payload: Some(payload),
+				}))
+			},
+			None => {
+				let tag = union_ty
+					.tag_ty
+					.map(|tag_ty| self.cu.values.intern_enum_tag_from_field_idx(tag_ty, field_idx));
+				vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Union { ty, tag, payload: None }))
+			},
+			value => self.inst(block, vtir::Opcode::UnionInit {
+				union_ty: ty,
+				field_idx: field_idx as _,
+				value,
+			}),
+		};
+
 		self.vuir_map.insert(id, inst);
 		Ok((inst, ControlFlow::May))
 	}
@@ -4057,14 +4116,27 @@ impl<'a> Sema<'a> {
 				}
 
 				let mut coerced = BumpVec::with_capacity_in(elements.len(), self.instructions_payload_alloc);
+				let mut comptime_values = Vec::with_capacity(elements.len());
+				let mut all_comptime = true;
 				for element in elements {
 					let value = self.resolve_inst(element);
-					coerced.push(self.coerce(block, &array.elem_ty, &value, span)?);
+					let value = self.coerce(block, &array.elem_ty, &value, span)?;
+					if let Some(value) = self.try_resolve_comptime_value(&value) {
+						comptime_values.push(value);
+					} else {
+						all_comptime = false;
+					}
+					coerced.push(value);
 				}
-				self.inst(block, vtir::Opcode::ArrayInit {
-					array_ty: ty,
-					elements: coerced.into_bump_slice(),
-				})
+				if all_comptime {
+					let values = self.cu.values.alloc_slice_fill_iter(comptime_values.into_iter());
+					self.cu.values.intern_trivial(&value::Key::Aggregate { ty, values }).into()
+				} else {
+					self.inst(block, vtir::Opcode::ArrayInit {
+						array_ty: ty,
+						elements: coerced.into_bump_slice(),
+					})
+				}
 			},
 			_ => {
 				self.push_error(
@@ -4237,18 +4309,14 @@ impl<'a> Sema<'a> {
 					Ok(inst)
 				},
 
-				// Tagged union to its tag integer type (for switch over tagged unions)
-				(value::Key::TypeUnion(_), value::Key::TypeInt { .. }) => {
-					if let Some(interned) = inst.as_interned_opt()
-						&& let value::Key::EnumTag { val, .. } = self.cu.values.index_to_key(interned)
-					{
-						return Ok(vtir::InstructionRef::Interned(*val));
-					}
-					break 'msg Err(format!(
-						"expected type `{}`, found `{}`",
-						self.cu.values.display_index(*dst_ty),
-						self.cu.values.display_index(inst_ty)
-					));
+				// enum literal to enum
+				(value::Key::TypeEnumLiteral, value::Key::TypeEnum(..)) => {
+					let value::Key::EnumLiteral(enum_lit) = self.cu.values.index_to_key(inst.as_interned()) else {
+						unreachable!();
+					};
+					let dst_enum_ty = self.cu.values.index_to_value(*dst_ty).as_enum();
+					let field = self.analyze_field_val(block, vtir::InstructionRef::Interned(*dst_ty), enum_lit, span, span)?;
+					Ok(field)
 				},
 
 				_ => Err(format!(
@@ -4341,119 +4409,73 @@ impl<'a> Sema<'a> {
 		cases: &[vtir::SwitchCase],
 		span: &Span,
 	) -> bool {
-		let (key, value) = self.cu.values.index_to_key_value(*operand_ty);
-		match (key, value) {
-			(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
-				let enum_fields = e.fields;
-				let mut covered = vec![false; enum_fields.len()];
-
-				for case in cases.iter() {
-					for item in case.items.iter() {
-						if let Some(val) = self.try_resolve_comptime_value(item) {
-							// Extract the integer tag value from EnumTag
-							let tag_val = match self.cu.values.index_to_key(val) {
-								value::Key::EnumTag { val: v, .. } => *v,
-								_ => val,
-							};
-							for (i, field) in enum_fields.iter().enumerate() {
-								if field.value == tag_val {
-									covered[i] = true;
-								}
-							}
-						}
-					}
-				}
-
-				let missing: Vec<_> = enum_fields
-					.iter()
-					.zip(covered.iter())
-					.filter(|(_, c)| !**c)
-					.map(|(f, _)| f.name.as_ref())
-					.collect();
-
-				if missing.is_empty() {
-					true
-				} else {
-					let variants = missing.join("`, `");
-					self.push_error(
-						Diagnostic::error()
-							.with_message(format!(
-								"switch is not exhaustive, missing variant{} `{variants}`",
-								if missing.len() > 1 { "s" } else { "" },
-							))
-							.with_label(Label::primary().with_span(self.diag_span(*span))),
-					);
-					false
-				}
-			},
+		let (tag_fields, union_fields) = match self.cu.values.index_to_key_value(*operand_ty) {
+			(value::Key::TypeEnum(_), value::Value::Enum(e)) => (e.fields, None),
 			(value::Key::TypeUnion(_), value::Value::Union(u)) => {
-				let union_fields = u.as_ref().fields;
-				let tag_ty = u.as_ref().tag_ty;
-
-				if tag_ty.is_none() {
+				let union_ty = u.as_ref();
+				let Some(tag_ty) = union_ty.tag_ty else {
 					self.push_error(
 						Diagnostic::error()
 							.with_message("cannot exhaustively switch on a bare union")
 							.with_label(Label::primary().with_span(self.diag_span(*span))),
 					);
 					return false;
-				}
-
-				let tag_ty = tag_ty.unwrap();
-				let mut covered = vec![false; union_fields.len()];
-
-				for case in cases.iter() {
-					for item in case.items.iter() {
-						if let Some(val) = self.try_resolve_comptime_value(item) {
-							let tag_val = match self.cu.values.index_to_key(val) {
-								value::Key::EnumTag { val: v, .. } => *v,
-								_ => val,
-							};
-							for (i, _field) in union_fields.iter().enumerate() {
-								let field_tag = self.cu.values.intern_trivial(&value::Key::Int {
-									ty: tag_ty,
-									value: Anyint::from(i).into(),
-								});
-								if field_tag == tag_val {
-									covered[i] = true;
-								}
-							}
-						}
-					}
-				}
-
-				let missing: Vec<_> = union_fields
-					.iter()
-					.zip(covered.iter())
-					.filter(|(_, c)| !**c)
-					.map(|(f, _)| f.name.as_ref())
-					.collect();
-
-				if missing.is_empty() {
-					true
-				} else {
-					let variants = missing.join("`, `");
-					self.push_error(
-						Diagnostic::error()
-							.with_message(format!(
-								"switch is not exhaustive, missing variant{} `{variants}`",
-								if missing.len() > 1 { "s" } else { "" },
-							))
-							.with_label(Label::primary().with_span(self.diag_span(*span))),
-					);
-					false
-				}
+				};
+				let (value::Key::TypeEnum(_), value::Value::Enum(tag_enum)) = self.cu.values.index_to_key_value(tag_ty) else {
+					unreachable!("tagged union tag type must be an enum");
+				};
+				assert_eq!(union_ty.fields.len(), tag_enum.fields.len());
+				(tag_enum.fields, Some(union_ty.fields))
 			},
 			_ => {
-				// Non-enum types always require else
 				self.push_error(
 					Diagnostic::error()
 						.with_message("switch must have an else branch")
 						.with_label(Label::primary().with_span(self.diag_span(*span))),
 				);
-				false
+				return false;
 			},
+		};
+
+		let mut covered = FxHashSet::default();
+		for item in cases.iter().flat_map(|case| case.items) {
+			let value = self
+				.try_resolve_comptime_value(item)
+				.expect("switch patterns must be comptime-known after coercion");
+			let tag = match self.cu.values.index_to_key(value) {
+				value::Key::EnumTag { val, .. } => *val,
+				_ => value,
+			};
+			covered.insert(tag);
 		}
+
+		let mut missing_count = 0;
+		let mut variants = String::new();
+		for (field_idx, tag_field) in tag_fields.iter().enumerate() {
+			if covered.contains(&tag_field.value) {
+				continue;
+			}
+			if missing_count != 0 {
+				variants.push_str("`, `");
+			}
+			let name = union_fields.map_or(tag_field.name, |fields| fields[field_idx].name);
+			variants.push_str(&name);
+			missing_count += 1;
+		}
+
+		if missing_count == 0 {
+			return true;
+		}
+
+		self.push_error(
+			Diagnostic::error()
+				.with_message(format!(
+					"switch is not exhaustive, missing variant{} `{variants}`",
+					if missing_count > 1 { "s" } else { "" },
+				))
+				.with_label(Label::primary().with_span(self.diag_span(*span))),
+		);
+		false
 	}
 
 	fn resolve_type(

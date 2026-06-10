@@ -551,10 +551,8 @@ pub enum Opcode {
 	/// Captures the payload of a tagged union in a switch case.
 	/// Resolved in sema to a UnionFieldValue.
 	SwitchCapture {
-		/// The switch operand (original union value)
 		switch_operand: InstructionRef,
-		/// The case pattern item (resolved to an EnumTag in sema)
-		case_item: InstructionRef,
+		case_pattern: InstructionRef,
 		span: Span,
 	},
 
@@ -571,15 +569,19 @@ impl Opcode {
 
 #[derive(Clone, Debug)]
 pub struct SwitchSingleCase {
-	pub item: InstructionRef,
+	pub pattern: InstructionRef,
 	pub capture: Option<ast::Ident>,
 	pub body: &'static [InstructionId],
+	pub span: Span,
+	pub pattern_span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct SwitchMultiCase {
 	pub items: &'static [InstructionRef],
 	pub body: &'static [InstructionId],
+	pub span: Span,
+	pub patterns_span: Span,
 }
 
 /// A declaration binds a list of instruction that returns a value to a name,

@@ -1184,32 +1184,7 @@ impl<'ast> Lowerer<'ast> {
 				})),
 				ast::Lit::Bool(b) => vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Bool(*b))),
 				ast::Lit::EnumVariant(variant) => {
-					// try to be more smart with a enum variant, in cases of a expr such as
-					// var a: ... = .variant we can construct a field access instruction by fetching the type
-					// of the ptr
-					match rhs_ctx {
-						ExprResultLocation::StoreToPtr { ptr, .. } => {
-							let pointee_ty = self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr });
-							self.inst(block_scope, vuir::Opcode::FieldValFromVal {
-								lhs: pointee_ty,
-								field: *variant,
-								span: expr.span,
-							})
-						},
-						ExprResultLocation::CoerceToTy(ty) => self.inst(block_scope, vuir::Opcode::FieldValFromVal {
-							lhs: ty,
-							field: *variant,
-							span: expr.span,
-						}),
-						c => {
-							self.errors.push(
-								Diagnostic::error()
-									.with_message("cannot infer type of field")
-									.with_label(Label::primary().with_span(self.diag_span(expr.span))),
-							);
-							self.inst(block_scope, vuir::Opcode::Invalid)
-						},
-					}
+					vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::EnumLiteral(*variant)))
 				},
 				ast::Lit::Null | ast::Lit::Char(..) => todo!(),
 			},
@@ -1590,7 +1565,6 @@ impl<'ast> Lowerer<'ast> {
 
 				// Get the type of the operand for enum variant inference in case patterns
 				let operand_ty = self.inst(*switch_scope, vuir::Opcode::TypeOf { value: operand_ref });
-				let case_rhs_ctx = ExprResultLocation::CoerceToTy(operand_ty);
 
 				let mut single_cases = BumpVec::new_in(self.instructions_payload_alloc);
 				let mut multi_cases = BumpVec::new_in(self.instructions_payload_alloc);
@@ -1606,7 +1580,7 @@ impl<'ast> Lowerer<'ast> {
 
 					if case.patterns.len() == 1 {
 						// Single-pattern case: lower pattern first (needed for capture)
-						let item = self.lower_expr(*switch_scope, &case.patterns[0], case_rhs_ctx);
+						let pattern = self.lower_expr(*switch_scope, &case.patterns[0], ExprResultLocation::None);
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
@@ -1616,7 +1590,7 @@ impl<'ast> Lowerer<'ast> {
 							let body_scope = if let Some(capture) = case.capture {
 								let capture_ref = self.inst(*scope, vuir::Opcode::SwitchCapture {
 									switch_operand: operand_ref,
-									case_item: item,
+									case_pattern: pattern,
 									span: capture.span,
 								});
 
@@ -1647,9 +1621,11 @@ impl<'ast> Lowerer<'ast> {
 						};
 
 						single_cases.push(vuir::SwitchSingleCase {
-							item,
+							pattern,
 							capture: case.capture,
 							body,
+							pattern_span: case.patterns[0].span,
+							span: case.span,
 						});
 					} else {
 						// Multi-pattern case
@@ -1675,13 +1651,17 @@ impl<'ast> Lowerer<'ast> {
 						};
 
 						let mut items = BumpVec::new_in(self.instructions_payload_alloc);
+						let mut patterns_span = case.patterns[0].span;
 						for pattern in case.patterns {
-							let item = self.lower_expr(*switch_scope, pattern, case_rhs_ctx);
+							let item = self.lower_expr(*switch_scope, pattern, ExprResultLocation::None);
 							items.push(item);
+							patterns_span = (patterns_span, pattern.span).into();
 						}
 						multi_cases.push(vuir::SwitchMultiCase {
 							items: items.into_bump_slice(),
 							body,
+							span: case.span,
+							patterns_span,
 						});
 					}
 				}
@@ -2727,6 +2707,16 @@ impl<'ast> Lowerer<'ast> {
 		union_decl: &'ast ast::UnionTy,
 		naming: vuir::NamingKind,
 	) -> vuir::InstructionId {
+		// tag must appear before DeclUnion inst
+		let tag = match union_decl.tag {
+			ast::UnionTagKind::Bare => None,
+			ast::UnionTagKind::AutoEnum => Some(None),
+			ast::UnionTagKind::Enum(expr) => {
+				let ref_val = self.lower_expr(block_scope, expr, ExprResultLocation::None);
+				Some(Some((ref_val, expr.span)))
+			},
+		};
+
 		let union_inst = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
 		let union_scope = {
@@ -2813,15 +2803,6 @@ impl<'ast> Lowerer<'ast> {
 				.map(|(k, _)| *k)
 				.collect_into(&mut keys);
 			keys
-		};
-
-		let tag = match union_decl.tag {
-			ast::UnionTagKind::Bare => None,
-			ast::UnionTagKind::AutoEnum => Some(None),
-			ast::UnionTagKind::Enum(expr) => {
-				let ref_val = self.lower_expr(block_scope, expr, ExprResultLocation::None);
-				Some(Some((ref_val, expr.span)))
-			},
 		};
 
 		self.instructions[union_inst] = vuir::Opcode::DeclUnion {
