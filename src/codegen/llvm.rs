@@ -183,12 +183,14 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 	}
 
 	/// Prefer this over builder().build_alloca to put alloca at top of basic block
-	fn build_alloca_at_top_of_bb(
+	fn build_alloca_at_top_of_bb<T>(
 		&mut self,
-		pointee_ty: value::Index,
-	) -> Result<PointerValue<'ctx>, BuilderError> {
-		let ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
-
+		pointee_ty: T,
+		name: &str,
+	) -> Result<PointerValue<'ctx>, BuilderError>
+	where
+		T: BasicType<'ctx>,
+	{
 		// LLVM recommends to put the alloca instruction at the beginning of the function (the entry bb)
 		// This is because the SROA and Mem2Reg passes only optimize alloca inside the entry basic block of the fn
 		// So any branching, blocks, inline calls will cause allocas outside the entry block to not be traversed by those passes
@@ -202,7 +204,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			None => self.builder().position_at_end(fn_entry_block),
 		}
 
-		let alloca = self.builder().build_alloca(ty, "")?;
+		#[expect(clippy::disallowed_methods)]
+		let alloca = self.builder().build_alloca(pointee_ty, name)?;
 		self.builder().position_at_end(prev_block);
 		Ok(alloca)
 	}
@@ -214,12 +217,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		ptr: PointerValue<'ctx>,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
 		let val = if self.lowerer.type_is_by_ref(pointee_ty) {
-			let alloca = self.build_alloca_at_top_of_bb(pointee_ty)?;
+			let pointee_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+			let alloca = self.build_alloca_at_top_of_bb(pointee_ty_llvm, "load.byref")?;
 			let pointee_ty_layout = self
 				.compilation_unit
 				.values
 				.type_layout(&self.compilation_unit.resolved_target, pointee_ty);
-			let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
 			self.builder().build_memcpy(
 				alloca,
 				pointee_ty_layout.align as u32,
@@ -233,6 +236,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			alloca.as_any_value_enum()
 		} else {
 			let llvm_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+
+			#[expect(clippy::disallowed_methods)]
 			self.builder().build_load(llvm_ty, ptr, "")?.as_any_value_enum()
 		};
 		Ok(val)
@@ -260,13 +265,15 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.ctx
 					.ptr_sized_int_type(&self.lowerer.target_machine.get_target_data(), None)
 					.const_int(elem_ty_layout.size, false),
-			);
+			)?;
 		} else {
 			let element = match value {
 				AnyValueEnum::FunctionValue(fun) => fun.as_global_value().as_pointer_value().as_basic_value_enum(),
 				value => value.try_into().unwrap(),
 			};
-			self.builder().build_store(elem_ptr, element);
+
+			#[expect(clippy::disallowed_methods)]
+			self.builder().build_store(elem_ptr, element)?;
 		}
 
 		Ok(())
@@ -278,9 +285,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		value: BasicValueEnum<'ctx>,
 		name: &str,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
-		// DONOCOMMIT use value and not opcodes
 		if self.lowerer.type_is_by_ref(ty) {
-			let storage = self.builder().build_alloca(value.get_type(), name)?;
+			let ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
+			let storage = self.build_alloca_at_top_of_bb(ty, "materialize")?;
+			#[allow(clippy::disallowed_methods)]
 			self.builder().build_store(storage, value)?;
 			Ok(storage.as_any_value_enum())
 		} else {
@@ -298,8 +306,9 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			Ok(match param {
 				BasicValueEnum::PointerValue(ptr) => ptr.as_any_value_enum(),
 				param => {
-					let nominal_ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
-					let storage = self.builder().build_alloca(nominal_ty, "abi.param.byref")?;
+					let ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
+					let storage = self.build_alloca_at_top_of_bb(ty, "abi.param.byref")?;
+					#[allow(clippy::disallowed_methods, reason = "abi gave us the value, no by-ref semantics to apply")]
 					self.builder().build_store(storage, param)?;
 					storage.as_any_value_enum()
 				},
@@ -320,21 +329,22 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			return Ok(value);
 		}
 
-		// DONOCOMMIT
 		Ok(match abi_ty {
+			#[allow(clippy::disallowed_methods, reason = "use the llvm type directly")]
 			Some(BasicMetadataTypeEnum::IntType(int_ty)) if self.lowerer.type_is_by_ref(ty) => self
 				.builder()
 				.build_load(int_ty, value.into_pointer_value(), "abi.arg.int")?
 				.as_any_value_enum(),
+			#[allow(clippy::disallowed_methods, reason = "use the llvm type directly")]
 			Some(BasicMetadataTypeEnum::IntType(int_ty)) if let AnyValueEnum::StructValue(value) = value => {
-				let storage = self.builder().build_alloca(value.get_type(), "")?;
+				let storage = self.build_alloca_at_top_of_bb(value.get_type().as_basic_type_enum(), "")?;
 				self.builder().build_store(storage, value)?;
 				self.builder().build_load(int_ty, storage, "")?.as_any_value_enum()
 			},
 			Some(BasicMetadataTypeEnum::PointerType(_)) if self.lowerer.type_is_by_ref(ty) => value,
 			Some(BasicMetadataTypeEnum::PointerType(_)) if let AnyValueEnum::StructValue(value) = value => {
-				let storage = self.builder().build_alloca(value.get_type(), "")?;
-				self.builder().build_store(storage, value)?;
+				let storage = self.build_alloca_at_top_of_bb(value.get_type().as_basic_type_enum(), "")?;
+				self.build_store(ty, storage, value.as_any_value_enum())?;
 				storage.as_any_value_enum()
 			},
 			_ => value,
@@ -411,7 +421,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::StackAlloc { ty: ptr_ty } => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*ptr_ty).as_type_ptr().pointee_ty;
-				let alloca = self.build_alloca_at_top_of_bb(pointee_ty)?;
+				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+				let alloca = self.build_alloca_at_top_of_bb(pointee_ty, "stackalloc")?;
 				self.vtir_inst_to_llvm_value.insert(*id, alloca.into());
 			},
 			vtir::Opcode::Load { ptr } => {
@@ -437,6 +448,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let _pointee_ty = self.lowerer.lower_type(dst_ptr_ty.pointee_ty);
 					let pointee_int_ty = ctx.custom_width_int_type(packed.bit_width);
 
+					#[allow(clippy::disallowed_methods, reason = "we directly use llvm types for build_load")]
 					// first load the dst value
 					let dst_val = self
 						.builder()
@@ -538,9 +550,9 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					// TODO(zino): consider wrapping LLVM types with compiler-side ABI metadata.
 					let ret_ptr = if abi::fn_returns_by_ref_in_first_param(self.lowerer, fn_ty) {
 						let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
-						let ret_ptr = self.builder().build_alloca(ret_ty, "sret_ret_ptr")?;
+						let ret_ptr = self.build_alloca_at_top_of_bb(ret_ty, "sret_ret_ptr")?;
 						values.push(ret_ptr.into());
-						Some((ret_ptr, ret_ty))
+						Some(ret_ptr)
 					} else {
 						None
 					};
@@ -569,7 +581,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				}
 
 				// if we have a ret_ptr, the actual val we returns for this call is a load to this pointer
-				let val = if let Some((ret_ptr, _)) = ret_ptr {
+				let val = if let Some(ret_ptr) = ret_ptr {
 					self.build_load(fn_ty.ret_ty, ret_ptr)?
 				} else {
 					val.as_any_value_enum()
@@ -971,8 +983,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					self.vtir_inst_to_llvm_value.insert(*id, struct_int.as_any_value_enum());
 				} else {
 					let struct_ty_llvm = self.lowerer.lower_type(*struct_ty).into_struct_type();
-					let storage = self.builder().build_alloca(struct_ty_llvm, "struct.init")?;
-					self.builder().build_store(storage, struct_ty_llvm.get_poison())?;
+					let storage = self.build_alloca_at_top_of_bb(struct_ty_llvm.as_basic_type_enum(), "struct.init")?;
 					let struct_def = self.compilation_unit.values.index_to_value(*struct_ty).as_struct();
 					for (i, field) in fields.iter().enumerate() {
 						let field_ty = struct_def.fields[i].ty;
@@ -987,9 +998,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let array_ty_idx = *array_ty;
 				let array_ty = self.lowerer.lower_type(array_ty_idx).into_array_type();
 				let elem_ty = self.compilation_unit.values.index_to_key(array_ty_idx).as_type_array().elem_ty;
-				let storage = self.builder().build_alloca(array_ty, "array.init")?;
+				let storage = self.build_alloca_at_top_of_bb(array_ty, "array.init")?;
 				for (i, element) in elements.iter().enumerate() {
 					let index = self.lowerer.ctx.i32_type().const_int(i as u64, false);
+					// SAFETY: sema ensures array init elements count match array type length
 					let elem_ptr = unsafe {
 						self.builder()
 							.build_in_bounds_gep(array_ty, storage, &[self.lowerer.ctx.i32_type().const_zero(), index], "")?
@@ -1013,7 +1025,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					self.lowerer.ctx.ptr_type(AddressSpace::default()).const_null()
 				} else {
 					let array_ty = elem_ty.array_type(elements.len().try_into().unwrap());
-					let array_alloca = self.builder().build_alloca(array_ty, "slice.literal")?;
+					let array_alloca = self.build_alloca_at_top_of_bb(array_ty, "slice.literal")?;
 					for (i, element) in elements.iter().enumerate() {
 						let index = self.lowerer.ctx.i32_type().const_int(i as u64, false);
 						let elem_ptr = unsafe {
@@ -1046,7 +1058,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			vtir::Opcode::AnyptrInit { value, value_ty } => {
 				let resolved = self.resolve_inst(value);
 				let payload_ty: BasicTypeEnum = self.lowerer.lower_type(*value_ty).try_into().unwrap();
-				let payload_alloca = self.builder().build_alloca(payload_ty, "any.payload")?;
+				let payload_alloca = self.build_alloca_at_top_of_bb(payload_ty, "any.payload")?;
 				self.build_store(*value_ty, payload_alloca, resolved)?;
 
 				let any_ty = self
@@ -1151,9 +1163,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				},
 				UnionRepr::Aggregate { ty: view_ty, tag, payload } => {
 					let nominal_ty = self.lowerer.lower_type(*union_ty).into_struct_type();
-					let alloca = self.builder().build_alloca(nominal_ty, "")?;
-					self.builder().build_store(alloca, nominal_ty.get_poison())?;
-
+					let alloca = self.build_alloca_at_top_of_bb(nominal_ty, "")?;
 					if let Some((payload_field_idx, payload_wrapper_ty)) = payload {
 						let mut payload_ptr = self.builder().build_struct_gep(view_ty, alloca, payload_field_idx, "")?;
 						if let Some(payload_wrapper_ty) = payload_wrapper_ty {
@@ -1171,6 +1181,11 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 					if let Some((tag, tag_field_idx)) = tag {
 						let tag_ptr = self.builder().build_struct_gep(view_ty, alloca, tag_field_idx, "")?;
+						#[allow(
+							clippy::disallowed_methods,
+							reason = "lower_union_repr_for_field only returns the llvm type for the tag, which does not use by-ref \
+							          semantics"
+						)]
 						self.builder().build_store(tag_ptr, tag)?;
 					}
 
@@ -1189,8 +1204,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						let union_ptr = self.resolve_inst(union_val).into_pointer_value();
 						let union_ty_llvm = self.lowerer.lower_type(union_ty).into_struct_type();
 						let tag_ptr = self.builder().build_struct_gep(union_ty_llvm, union_ptr, tag_field_idx, "")?;
-						let tag_ty: BasicTypeEnum = self.lowerer.lower_type(*tag_ty).try_into().unwrap();
-						let tag = self.builder().build_load(tag_ty, tag_ptr, "")?;
+						let tag = self.build_load(*tag_ty, tag_ptr)?;
 						self.vtir_inst_to_llvm_value.insert(*id, tag.as_any_value_enum());
 					},
 				}

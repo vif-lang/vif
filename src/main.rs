@@ -22,6 +22,7 @@
 #![feature(sync_nonpoison)]
 #![feature(unsafe_fields)]
 #![allow(arithmetic_overflow, incomplete_features, internal_features, unused, unsafe_op_in_unsafe_fn)]
+#![deny(clippy::disallowed_methods)]
 
 use std::{
 	fs::File,

@@ -1,0 +1,5 @@
+disallowed-methods = [
+    { path = "inkwell::builder::Builder::build_alloca", reason = "Use lowerer build_alloca_at_top_of_bb() that inserts alloca at the entry bb of the function instead" },
+    { path = "inkwell::builder::Builder::build_load", reason = "Use lowerer build_load() instead that handles by-ref types properly" },
+    { path = "inkwell::builder::Builder::build_store", reason = "Use lowerer build_store() instead that handles by-ref types properly" },
+]
