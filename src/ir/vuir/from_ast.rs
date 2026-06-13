@@ -726,11 +726,14 @@ impl<'ast> Lowerer<'ast> {
 		match ty {
 			ast::Type::Void => self.cu.values.common.void_t.into(),
 			ast::Type::Int(i) => vuir::InstructionRef::Interned(match i {
-				ast::IntSuffix::U(bits) => self.cu.values.intern_trivial(&value::Key::TypeInt {
+				ast::IntSuffix::U(bits) => self.cu.values.intern_trivial(&value::Key::Type(value::Type::Int {
 					signed: false,
 					bits: *bits,
-				}),
-				ast::IntSuffix::I(bits) => self.cu.values.intern_trivial(&value::Key::TypeInt { signed: true, bits: *bits }),
+				})),
+				ast::IntSuffix::I(bits) => self
+					.cu
+					.values
+					.intern_trivial(&value::Key::Type(value::Type::Int { signed: true, bits: *bits })),
 				ast::IntSuffix::Usize => self.cu.values.common.usize_t,
 				ast::IntSuffix::Isize => self.cu.values.common.isize_t,
 			}),
@@ -1157,18 +1160,21 @@ impl<'ast> Lowerer<'ast> {
 				ast::Lit::Str(s) => {
 					// TODO(ldubos): better handle pointers, and properly set str ptr type based on LHS
 					// String literals are typed as [*:0]const u8 (pointer to null-terminated u8 array)
-					let u8_ty = self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits: 8 });
+					let u8_ty = self
+						.cu
+						.values
+						.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits: 8 }));
 
 					let slice_ty = self
 						.cu
 						.values
-						.intern_trivial(&value::Key::TypeSlice(TypeSlice { pointee_ty: u8_ty }));
+						.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: u8_ty })));
 
-					let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+					let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 						pointee_ty: u8_ty,
 						packed: None,
 						is_const: true,
-					}));
+					})));
 					vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Str { slice_ty, value: *s }))
 				},
 				ast::Lit::Float { symbol, suffix } => vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Float {
@@ -1823,8 +1829,14 @@ impl<'ast> Lowerer<'ast> {
 
 		let ty = match suffix.as_ref() {
 			Some(suffix) => match suffix {
-				&ast::IntSuffix::U(bits) => self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits }),
-				&ast::IntSuffix::I(bits) => self.cu.values.intern_trivial(&value::Key::TypeInt { signed: true, bits }),
+				&ast::IntSuffix::U(bits) => self
+					.cu
+					.values
+					.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits })),
+				&ast::IntSuffix::I(bits) => self
+					.cu
+					.values
+					.intern_trivial(&value::Key::Type(value::Type::Int { signed: true, bits })),
 				ast::IntSuffix::Usize => self.cu.values.common.usize_t,
 				ast::IntSuffix::Isize => self.cu.values.common.isize_t,
 			},

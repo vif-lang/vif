@@ -72,7 +72,6 @@ use crate::{
 		PtrKind,
 		StructField,
 		StructLayout,
-		Type,
 		TypeEnum,
 		TypeFn,
 		TypePtr,
@@ -320,9 +319,33 @@ impl<'a> Sema<'a> {
 		&self,
 		owner_type: value::Index,
 	) -> Option<&'static [value::Capture]> {
-		match self.cu.values.index_to_key(owner_type) {
-			value::Key::TypeStruct(ns) | value::Key::TypeEnum(ns) | value::Key::TypeUnion(ns) => Some(ns.captures),
-			_ => None,
+		let value::Key::Type(ty) = self.cu.values.index_to_key(owner_type) else {
+			return None;
+		};
+		match ty {
+			value::Type::Struct(ns) | value::Type::Enum(ns) | value::Type::Union(ns) => Some(ns.captures),
+			value::Type::Int { .. }
+			| value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::Usize
+			| value::Type::Isize
+			| value::Type::F16
+			| value::Type::F32
+			| value::Type::F64
+			| value::Type::F128
+			| value::Type::Bool
+			| value::Type::Void
+			| value::Type::Fn(_)
+			| value::Type::Ptr(_)
+			| value::Type::Slice(_)
+			| value::Type::Array(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => None,
 		}
 	}
 
@@ -370,18 +393,18 @@ impl<'a> Sema<'a> {
 		source_fn_ty: value::Index,
 	) -> value::Index {
 		let source_fn_ty = self.cu.values.index_to_key(source_fn_ty).as_type_fn();
-		let env_ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+		let env_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 			pointee_ty: self.cu.values.common.void_t,
 			packed: None,
 			is_const: false,
-		}));
+		})));
 		let mut params = Vec::with_capacity(source_fn_ty.params.len() + 1);
 		params.push(env_ptr_ty);
 		params.extend_from_slice(source_fn_ty.params);
 		let mut comptime_params = BitVec::<u8>::with_capacity(source_fn_ty.comptime_params.len() + 1);
 		comptime_params.push(false);
 		comptime_params.extend(source_fn_ty.comptime_params.iter().by_vals());
-		self.cu.values.intern_trivial(&value::Key::TypeFn(TypeFn {
+		self.cu.values.intern_trivial(&value::Key::Type(value::Type::Fn(TypeFn {
 			params: self.cu.values.alloc_slice(&params),
 			comptime_params: self.cu.values.alloc_bitslice(&comptime_params),
 			first_positional_param: source_fn_ty.first_positional_param.map(|idx| idx + 1),
@@ -390,7 +413,7 @@ impl<'a> Sema<'a> {
 			external: source_fn_ty.external,
 			callconv: source_fn_ty.callconv,
 			inline: source_fn_ty.inline,
-		}))
+		})))
 	}
 
 	pub fn finish(
@@ -574,7 +597,7 @@ impl<'a> Sema<'a> {
 			return Err(AnalyzeError::AnalysisFailed);
 		};
 
-		let value::Key::TypeEnum(_) = self.cu.values.index_to_key(ty) else {
+		let value::Key::Type(value::Type::Enum(_)) = self.cu.values.index_to_key(ty) else {
 			unreachable!("internal compiler error: `CallingConvention` declaration in `builtin` module is not an enum");
 		};
 
@@ -824,7 +847,7 @@ impl<'a> Sema<'a> {
 			},
 			vuir::BuiltinKind::Nullptr => {
 				let ptr_ty = fun_ty.ret_ty;
-				if !matches!(self.cu.values.index_to_key(ptr_ty), value::Key::TypePtr(_)) {
+				if !matches!(self.cu.values.index_to_key(ptr_ty), value::Key::Type(value::Type::Ptr(_))) {
 					self.push_error(
 						Diagnostic::error()
 							.with_message(format!(
@@ -846,20 +869,20 @@ impl<'a> Sema<'a> {
 				let pointee_ty = self.resolve_inst(&func_vuir_info.params[0].as_ref());
 				let ptr = self.resolve_inst(&func_vuir_info.params[1].as_ref());
 				let len = self.resolve_inst(&func_vuir_info.params[2].as_ref());
-				let slice_ty = self.cu.values.intern_trivial(&value::Key::TypeSlice(TypeSlice {
+				let slice_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice {
 					pointee_ty: pointee_ty.as_interned(),
-				}));
+				})));
 				let slice = self.inst(block, vtir::Opcode::SliceFromRawParts { slice_ty, ptr, len });
 				Ok(slice)
 			},
 			vuir::BuiltinKind::SlicePtr => {
 				let pointee_ty = self.resolve_inst(&func_vuir_info.params[0].as_ref()).as_interned();
 				let slice = self.resolve_inst(&func_vuir_info.params[1].as_ref());
-				let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+				let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 					pointee_ty,
 					packed: None,
 					is_const: true,
-				}));
+				})));
 				let ptr = self.inst(block, vtir::Opcode::SlicePtr { slice, ptr_ty });
 				Ok(ptr)
 			},
@@ -1013,7 +1036,7 @@ impl<'a> Sema<'a> {
 		let src_ty = self.type_of(&src);
 
 		// Linear type move tracking: loading from a linear-typed pointer is a move
-		if let value::Key::TypePtr(ptr) = self.cu.values.index_to_key(src_ty)
+		if let value::Key::Type(value::Type::Ptr(ptr)) = self.cu.values.index_to_key(src_ty)
 			&& self.cu.values.type_is_linear(ptr.pointee_ty)
 			&& let Some(slot) = self.linear_slots.get(&src)
 		{
@@ -1045,7 +1068,7 @@ impl<'a> Sema<'a> {
 		}
 
 		// ensure src pointee is a pointer, else the dereference syntax does not make sense
-		if !matches!(self.cu.values.index_to_key(src_ty), value::Key::TypePtr(..)) {
+		if !matches!(self.cu.values.index_to_key(src_ty), value::Key::Type(value::Type::Ptr(..))) {
 			self.push_error(
 				Diagnostic::error()
 					.with_message(format!("load expected a ptr but found `{}`", self.cu.values.display_index(src_ty)))
@@ -1150,13 +1173,13 @@ impl<'a> Sema<'a> {
 				// insert the struct key with a none value so we have an index to give for our namespaces
 				let (struct_key, struct_idx) = {
 					let captures = self.resolve_vuir_captures(block, captures)?;
-					let struct_key = value::Key::TypeStruct(value::NamespaceType {
+					let struct_key = value::Key::Type(value::Type::Struct(value::NamespaceType {
 						inst: GlobalVuirInstructionId {
 							module: self.module,
 							inst: id,
 						},
 						captures,
-					});
+					}));
 					let struct_idx = self.cu.values.intern_non_trivial(&struct_key, value::Value::none());
 					(struct_key, struct_idx)
 				};
@@ -1222,103 +1245,141 @@ impl<'a> Sema<'a> {
 				let layout = if *packed {
 					for f in &fields {
 						let (key, value) = self.cu.values.index_to_key_value(f.ty);
-						match key {
-							value::Key::TypeIsize
-							| value::Key::TypeUsize
-							| value::Key::TypeF16
-							| value::Key::TypeF32
-							| value::Key::TypeF64
-							| value::Key::TypeF128
-							| value::Key::TypeBool
-							| value::Key::TypeVoid
-							| value::Key::TypeInt { .. } => {},
-							value::Key::TypeStruct(..)
-								if matches!(value.as_struct().as_ref().layout, value::StructLayout::Packed { .. }) => {},
-							_ => {
-								return Err(AnalyzeError::AnalysisFailed);
+						let value::Key::Type(ty) = key else {
+							return Err(AnalyzeError::AnalysisFailed);
+						};
+						match ty {
+							value::Type::Isize
+							| value::Type::Usize
+							| value::Type::F16
+							| value::Type::F32
+							| value::Type::F64
+							| value::Type::F128
+							| value::Type::Bool
+							| value::Type::Void
+							| value::Type::Int { .. } => {},
+							value::Type::Struct(..) if matches!(value.as_struct().as_ref().layout, value::StructLayout::Packed { .. }) => {
 							},
+							value::Type::Anyint
+							| value::Type::Anyfloat
+							| value::Type::Struct(_)
+							| value::Type::Enum(_)
+							| value::Type::Union(_)
+							| value::Type::Fn(_)
+							| value::Type::Ptr(_)
+							| value::Type::Slice(_)
+							| value::Type::Array(_)
+							| value::Type::NullPtr
+							| value::Type::Any
+							| value::Type::Anyptr
+							| value::Type::GenericPoison
+							| value::Type::Type
+							| value::Type::Never
+							| value::Type::EnumLiteral => return Err(AnalyzeError::AnalysisFailed),
 						}
 					}
 
 					let mut bit_offset = 0u32;
 					let packed_fields = fields
 						.iter()
-						.map(|f| match self.cu.values.index_to_key_value(f.ty) {
-							(value::Key::TypeInt { bits, .. }, _) => {
-								let bit_width = *bits as u32;
-								let info = PackedStructFieldInfo {
+						.map(|f| {
+							let (value::Key::Type(ty), value) = self.cu.values.index_to_key_value(f.ty) else {
+								unreachable!("packed struct field is not a type")
+							};
+							match ty {
+								value::Type::Int { bits, .. } => {
+									let bit_width = *bits as u32;
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: bit_width,
+									};
+									bit_offset += bit_width;
+									info
+								},
+								value::Type::Bool => {
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: 1,
+									};
+									bit_offset += 1;
+									info
+								},
+								value::Type::F16 => {
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: 16,
+									};
+									bit_offset += 16;
+									info
+								},
+								value::Type::F32 => {
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: 32,
+									};
+									bit_offset += 32;
+									info
+								},
+								value::Type::F64 => {
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: 64,
+									};
+									bit_offset += 64;
+									info
+								},
+								value::Type::F128 => {
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: 128,
+									};
+									bit_offset += 128;
+									info
+								},
+								value::Type::Isize | value::Type::Usize => {
+									let ptr_size = self.cu.resolved_target.ptr_width_in_bits as _;
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: ptr_size,
+									};
+									bit_offset += ptr_size;
+									info
+								},
+								value::Type::Void => PackedStructFieldInfo {
 									offset: bit_offset,
-									width: bit_width,
-								};
-								bit_offset += bit_width;
-								info
-							},
-							(value::Key::TypeBool, _) => {
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: 1,
-								};
-								bit_offset += 1;
-								info
-							},
-							(value::Key::TypeF16, _) => {
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: 16,
-								};
-								bit_offset += 16;
-								info
-							},
-							(value::Key::TypeF32, _) => {
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: 32,
-								};
-								bit_offset += 32;
-								info
-							},
-							(value::Key::TypeF64, _) => {
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: 64,
-								};
-								bit_offset += 64;
-								info
-							},
-							(value::Key::TypeF128, _) => {
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: 128,
-								};
-								bit_offset += 128;
-								info
-							},
-							(value::Key::TypeIsize | value::Key::TypeUsize, _) => {
-								let ptr_size = self.cu.resolved_target.ptr_width_in_bits as _;
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: ptr_size,
-								};
-								bit_offset += ptr_size;
-								info
-							},
-							(value::Key::TypeVoid, _) => PackedStructFieldInfo {
-								offset: bit_offset,
-								width: 0,
-							},
-							(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
-								let StructLayout::Packed { fields_bits, .. } = r#struct.as_ref().layout else {
-									unreachable!()
-								};
-								let bit_width = fields_bits;
-								let info = PackedStructFieldInfo {
-									offset: bit_offset,
-									width: bit_width,
-								};
-								bit_offset += bit_width;
-								info
-							},
-							_ => unreachable!(),
+									width: 0,
+								},
+								value::Type::Struct(_) => {
+									let value::Value::Struct(r#struct) = value else {
+										unreachable!("struct type without struct value")
+									};
+									let StructLayout::Packed { fields_bits, .. } = r#struct.as_ref().layout else {
+										unreachable!()
+									};
+									let bit_width = fields_bits;
+									let info = PackedStructFieldInfo {
+										offset: bit_offset,
+										width: bit_width,
+									};
+									bit_offset += bit_width;
+									info
+								},
+								value::Type::Anyint
+								| value::Type::Anyfloat
+								| value::Type::Enum(_)
+								| value::Type::Union(_)
+								| value::Type::Fn(_)
+								| value::Type::Ptr(_)
+								| value::Type::Slice(_)
+								| value::Type::Array(_)
+								| value::Type::NullPtr
+								| value::Type::Any
+								| value::Type::Anyptr
+								| value::Type::GenericPoison
+								| value::Type::Type
+								| value::Type::Never
+								| value::Type::EnumLiteral => unreachable!("invalid packed struct field type"),
+							}
 						})
 						.collect::<Vec<_>>();
 
@@ -1379,13 +1440,13 @@ impl<'a> Sema<'a> {
 				// insert the struct key with a none value so we have an index to give for our namespaces
 				let (enum_key, enum_idx) = {
 					let captures = self.resolve_vuir_captures(block, captures)?;
-					let enum_key = value::Key::TypeEnum(value::NamespaceType {
+					let enum_key = value::Key::Type(value::Type::Enum(value::NamespaceType {
 						inst: GlobalVuirInstructionId {
 							module: self.module,
 							inst: id,
 						},
 						captures,
-					});
+					}));
 					let enum_idx = self.cu.values.intern_non_trivial(&enum_key, value::Value::none());
 					(enum_key, enum_idx)
 				};
@@ -1428,7 +1489,7 @@ impl<'a> Sema<'a> {
 					// ensure tag_ty is numeric
 					if !matches!(
 						self.cu.values.index_to_key(tag_ty),
-						value::Key::TypeInt { .. } | value::Key::TypeAnyint
+						value::Key::Type(value::Type::Int { .. }) | value::Key::Type(value::Type::Anyint)
 					) {
 						self.push_error(
 							Diagnostic::error()
@@ -1445,7 +1506,12 @@ impl<'a> Sema<'a> {
 					// Determines how many bits are needed to represent the number of fields
 					let bits = fields.len().next_power_of_two().trailing_zeros().max(1).min(u16::MAX as u32) as u16;
 
-					(self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits }), false)
+					(
+						self.cu
+							.values
+							.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits })),
+						false,
+					)
 				};
 
 				// TODO(zino): replace this with a more direct field-value lookup structure.
@@ -1548,13 +1614,13 @@ impl<'a> Sema<'a> {
 			} => {
 				let (captures, union_key, union_idx) = {
 					let captures = self.resolve_vuir_captures(block, captures)?;
-					let union_key = value::Key::TypeUnion(value::NamespaceType {
+					let union_key = value::Key::Type(value::Type::Union(value::NamespaceType {
 						inst: GlobalVuirInstructionId {
 							module: self.module,
 							inst: id,
 						},
 						captures,
-					});
+					}));
 					let union_idx = self.cu.values.intern_non_trivial(&union_key, value::Value::none());
 					(captures, union_key, union_idx)
 				};
@@ -1630,7 +1696,10 @@ impl<'a> Sema<'a> {
 					None => None,
 					Some(None) => {
 						let bits = fields.len().next_power_of_two().trailing_zeros().max(1).min(u16::MAX as u32) as u16;
-						let tag_ty = self.cu.values.intern_trivial(&value::Key::TypeInt { signed: false, bits });
+						let tag_ty = self
+							.cu
+							.values
+							.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits }));
 						let enum_name = Intern::from(format!("{union_name}_AutoEnumTag").as_str());
 						let enum_fields = self
 							.cu
@@ -1642,13 +1711,13 @@ impl<'a> Sema<'a> {
 									value: Anyint::from(idx).into(),
 								}),
 							}));
-						let enum_key = value::Key::TypeEnum(value::NamespaceType {
+						let enum_key = value::Key::Type(value::Type::Enum(value::NamespaceType {
 							inst: GlobalVuirInstructionId {
 								module: self.module,
 								inst: id,
 							},
 							captures,
-						});
+						}));
 						let enum_idx = self.cu.values.intern_non_trivial(&enum_key, value::Value::none());
 						let enum_namespace = self
 							.cu
@@ -1665,7 +1734,7 @@ impl<'a> Sema<'a> {
 					},
 					Some(Some((tag_ref, tag_span))) => {
 						let tag_ty = self.resolve_type(*block, tag_ref, tag_span)?;
-						if !matches!(self.cu.values.index_to_key(tag_ty), value::Key::TypeEnum(..)) {
+						if !matches!(self.cu.values.index_to_key(tag_ty), value::Key::Type(value::Type::Enum(..))) {
 							self.push_error(
 								Diagnostic::error()
 									.with_message("union tag type must be an enum")
@@ -1823,7 +1892,10 @@ impl<'a> Sema<'a> {
 						let val = self.cu.values.index_to_key(*val).as_int().1;
 						let val = val.to_u64().unwrap() as u8;
 						assert!(callconv_enum_ty.fields.len() == CallingConvention::Count as _);
-						Some(unsafe { core::mem::transmute(val) })
+						assert!(val < CallingConvention::Count as u8);
+						// SAFETY: `CallingConvention` is `repr(u8)`, and every value below
+						// `Count` names one of its calling-convention variants.
+						Some(unsafe { core::mem::transmute::<u8, CallingConvention>(val) })
 					} else {
 						None
 					};
@@ -1839,7 +1911,7 @@ impl<'a> Sema<'a> {
 						CallingConvention::Vif
 					};
 
-					let fn_ty = value::Key::TypeFn(TypeFn {
+					let fn_ty = value::Key::Type(value::Type::Fn(TypeFn {
 						params: self.cu.values.alloc_slice(&param_defs),
 						comptime_params: self.cu.values.alloc_bitslice(&comptime_params),
 						first_positional_param: *first_positional_arg_index,
@@ -1848,7 +1920,7 @@ impl<'a> Sema<'a> {
 						external: *external,
 						callconv,
 						inline: *inline,
-					});
+					}));
 
 					self.cu.values.intern_trivial(&fn_ty)
 				};
@@ -1969,26 +2041,28 @@ impl<'a> Sema<'a> {
 						};
 						let env_ty = runtime_env.ty;
 						let field_ty = match self.cu.values.index_to_key_value(env_ty) {
-							(value::Key::TypeStruct(_), value::Value::Struct(env_struct)) => env_struct.as_ref().fields[field_idx].ty,
+							(value::Key::Type(value::Type::Struct(_)), value::Value::Struct(env_struct)) => {
+								env_struct.as_ref().fields[field_idx].ty
+							},
 							_ => {
 								self.push_error(Diagnostic::error().with_message("runtime capture environment must be a struct"));
 								return Err(AnalyzeError::AnalysisFailed);
 							},
 						};
-						let env_ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+						let env_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 							pointee_ty: env_ty,
 							packed: None,
 							is_const: false,
-						}));
+						})));
 						let typed_env_ptr = self.inst(block, vtir::Opcode::BitCast {
 							src: runtime_env.ptr,
 							dst_ty: env_ptr_ty,
 						});
-						let capture_field_ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+						let capture_field_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 							pointee_ty: field_ty,
 							packed: None,
 							is_const: false,
-						}));
+						})));
 						let capture_field_ptr = self.inst(block, vtir::Opcode::StructFieldPtr {
 							struct_ptr: typed_env_ptr,
 							field_idx,
@@ -2009,17 +2083,62 @@ impl<'a> Sema<'a> {
 			},
 			vuir::Opcode::AggregateInit { ty, kind, span } => {
 				let ty = self.resolve_type(block, ty, span)?;
+				let value::Key::Type(ty_key) = self.cu.values.index_to_key(ty) else {
+					unreachable!("aggregate initializer target is not a type")
+				};
 				match kind {
-					vuir::AggregateInitKind::Empty => match self.cu.values.index_to_key(ty) {
-						value::Key::TypeUnion { .. } => self.analyze_union_init(id, block, ty, &[], span),
-						value::Key::TypeStruct(..) => self.analyze_struct_init(id, block, ty, &[], span),
-						value::Key::TypeArray(..) | value::Key::TypeSlice(..) => self.analyze_array_init(id, block, ty, &[], span),
-						_ => unreachable!(),
+					vuir::AggregateInitKind::Empty => match ty_key {
+						value::Type::Union(..) => self.analyze_union_init(id, block, ty, &[], span),
+						value::Type::Struct(..) => self.analyze_struct_init(id, block, ty, &[], span),
+						value::Type::Array(..) | value::Type::Slice(..) => self.analyze_array_init(id, block, ty, &[], span),
+						value::Type::Int { .. }
+						| value::Type::Anyint
+						| value::Type::Anyfloat
+						| value::Type::Usize
+						| value::Type::Isize
+						| value::Type::F16
+						| value::Type::F32
+						| value::Type::F64
+						| value::Type::F128
+						| value::Type::Bool
+						| value::Type::Void
+						| value::Type::Enum(_)
+						| value::Type::Fn(_)
+						| value::Type::Ptr(_)
+						| value::Type::NullPtr
+						| value::Type::Any
+						| value::Type::Anyptr
+						| value::Type::GenericPoison
+						| value::Type::Type
+						| value::Type::Never
+						| value::Type::EnumLiteral => unreachable!("invalid empty aggregate initializer type"),
 					},
-					vuir::AggregateInitKind::Adt(fields) => match self.cu.values.index_to_key(ty) {
-						value::Key::TypeUnion { .. } => self.analyze_union_init(id, block, ty, fields, span),
-						value::Key::TypeStruct(..) => self.analyze_struct_init(id, block, ty, fields, span),
-						_ => unreachable!(),
+					vuir::AggregateInitKind::Adt(fields) => match ty_key {
+						value::Type::Union(..) => self.analyze_union_init(id, block, ty, fields, span),
+						value::Type::Struct(..) => self.analyze_struct_init(id, block, ty, fields, span),
+						value::Type::Int { .. }
+						| value::Type::Anyint
+						| value::Type::Anyfloat
+						| value::Type::Usize
+						| value::Type::Isize
+						| value::Type::F16
+						| value::Type::F32
+						| value::Type::F64
+						| value::Type::F128
+						| value::Type::Bool
+						| value::Type::Void
+						| value::Type::Enum(_)
+						| value::Type::Fn(_)
+						| value::Type::Ptr(_)
+						| value::Type::Slice(_)
+						| value::Type::Array(_)
+						| value::Type::NullPtr
+						| value::Type::Any
+						| value::Type::Anyptr
+						| value::Type::GenericPoison
+						| value::Type::Type
+						| value::Type::Never
+						| value::Type::EnumLiteral => unreachable!("invalid ADT initializer type"),
 					},
 					vuir::AggregateInitKind::Array(elements) => self.analyze_array_init(id, block, ty, elements, span),
 				}
@@ -2060,11 +2179,11 @@ impl<'a> Sema<'a> {
 			opcode @ (vuir::Opcode::StackAlloc { name, ty, span } | vuir::Opcode::StackAllocMut { name, ty, span }) => {
 				let ty = self.resolve_type(block, ty, span)?;
 				let is_linear = self.cu.values.type_is_linear(ty);
-				let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+				let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 					pointee_ty: ty,
 					packed: None,
 					is_const: false,
-				}));
+				})));
 				let inst_ref = {
 					if self.cu.values.type_is_comptime_only(ty) {
 						self.push_error(
@@ -2095,11 +2214,11 @@ impl<'a> Sema<'a> {
 			},
 			opcode @ (vuir::Opcode::StackAllocComptime { name, ty, span } | vuir::Opcode::StackAllocComptimeMut { name, ty, span }) => {
 				let ty = self.resolve_type(block, ty, span)?;
-				let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+				let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 					pointee_ty: ty,
 					packed: None,
 					is_const: false,
-				}));
+				})));
 				let inst_ref = {
 					let const_alloc = self.comptime_memory.allocate(ty, *span);
 					vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
@@ -2183,11 +2302,11 @@ impl<'a> Sema<'a> {
 					self.instructions[alloc.as_id().unwrap()] = vtir::Opcode::Noop;
 
 					{
-						let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+						let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 							pointee_ty: ty,
 							packed: None,
 							is_const: true,
-						}));
+						})));
 						let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
 							ty: ptr_ty,
 							kind: PtrKind::Value(value.as_interned()),
@@ -2204,11 +2323,11 @@ impl<'a> Sema<'a> {
 						return Err(AnalyzeError::AnalysisFailed);
 					}
 					self.ensure_type_exist_in_runtime(ty, span)?;
-					let ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+					let ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 						pointee_ty: ty,
 						packed: None,
 						is_const: is_const_binding,
-					}));
+					})));
 					self.instructions[alloc.as_id().unwrap()] = vtir::Opcode::StackAlloc { ty };
 					alloc
 				};
@@ -2229,11 +2348,11 @@ impl<'a> Sema<'a> {
 				let original_alloc = self.resolve_inst(&alloc.as_ref());
 				let alloc_ptr_const_ty = {
 					let alloc_ptr_ty = self.cu.values.index_to_key(self.type_of(&original_alloc)).as_type_ptr();
-					self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+					self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 						pointee_ty: alloc_ptr_ty.pointee_ty,
 						packed: alloc_ptr_ty.packed,
 						is_const: alloc_ptr_ty.is_const,
-					}))
+					})))
 				};
 
 				let alloc = if self.try_resolve_comptime_value(&original_alloc).is_some() {
@@ -2401,7 +2520,7 @@ impl<'a> Sema<'a> {
 				let field_ptr_ty = self.type_of(&field_ptr);
 
 				let field_ptr_inner_ty = match self.cu.values.index_to_key(field_ptr_ty) {
-					value::Key::TypePtr(ptr) => ptr.pointee_ty,
+					value::Key::Type(value::Type::Ptr(ptr)) => ptr.pointee_ty,
 					_ => unreachable!(),
 				};
 
@@ -2412,21 +2531,21 @@ impl<'a> Sema<'a> {
 					// 		^ this part is a **type, fn calls in vuir generation always takes their callee by ref
 					//
 					// we need to deref the field_ptr at least once if it contains an other pointer to get the inner object
-					let (object_ptr, concrete_ty) = if let value::Key::TypePtr(inner_ptr) = self.cu.values.index_to_key(field_ptr_inner_ty)
-					{
-						let loaded = self.analyze_load(block, field_ptr, span)?;
-						(loaded, inner_ptr.pointee_ty)
-					} else {
-						(field_ptr, field_ptr_inner_ty)
-					};
+					let (object_ptr, concrete_ty) =
+						if let value::Key::Type(value::Type::Ptr(inner_ptr)) = self.cu.values.index_to_key(field_ptr_inner_ty) {
+							let loaded = self.analyze_load(block, field_ptr, span)?;
+							(loaded, inner_ptr.pointee_ty)
+						} else {
+							(field_ptr, field_ptr_inner_ty)
+						};
 
 					// first resolve by field: function pointer call, type as callee
 					match self.cu.values.index_to_key_value(concrete_ty) {
-						(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
+						(value::Key::Type(value::Type::Struct(_)), value::Value::Struct(r#struct)) => {
 							// TODO(zino)
 							// fallback to decl resolution for now
 						},
-						(value::Key::TypeType, _) => {
+						(value::Key::Type(value::Type::Type), _) => {
 							let namespace_type = self.analyze_load(block, object_ptr, span)?;
 							let fun = self.analyze_field_val(block, namespace_type, &field_name.symbol, &field_name.span, span)?;
 							break 'fun (AnalyzedCallee { fun, env: None }, None);
@@ -2436,7 +2555,7 @@ impl<'a> Sema<'a> {
 
 					// field resolution failed, search in decls:  method call
 					let decl = match self.cu.values.index_to_key_value(concrete_ty) {
-						(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
+						(value::Key::Type(value::Type::Struct(_)), value::Value::Struct(r#struct)) => {
 							// we have a pointer to a struct, lookup in the struct the field as a decl
 							self.lookup_decl_in_namespace(r#struct.namespace, field_name.symbol)
 						},
@@ -2458,16 +2577,16 @@ impl<'a> Sema<'a> {
 					// we have a potential function
 					let decl = self.analyze_decl_val(block, decl, span)?;
 					match self.cu.values.index_to_key(self.type_of(&decl)) {
-						value::Key::TypeFn(TypeFn {
+						value::Key::Type(value::Type::Fn(TypeFn {
 							params,
 							first_positional_param: Some(first_positional_param),
 							..
-						}) => {
+						})) => {
 							let expected_ty = params[*first_positional_param as usize];
 							if concrete_ty == expected_ty {
 								let deref_callee = self.analyze_load(block, object_ptr, span)?;
 								(AnalyzedCallee { fun: decl, env: None }, Some(deref_callee))
-							} else if matches!(self.cu.values.index_to_key(expected_ty), value::Key::TypePtr(ptr_ty) if ptr_ty.pointee_ty == concrete_ty)
+							} else if matches!(self.cu.values.index_to_key(expected_ty), value::Key::Type(value::Type::Ptr(ptr_ty)) if ptr_ty.pointee_ty == concrete_ty)
 							{
 								// we authorize a single dereference for receiver calls so we don't need a special syntax -> like C++
 								(AnalyzedCallee { fun: decl, env: None }, Some(object_ptr))
@@ -2525,7 +2644,7 @@ impl<'a> Sema<'a> {
 			vuir::Opcode::StructInitTypeOfField { r#struct, field } => {
 				let inst = self.resolve_inst(r#struct).as_interned();
 				let ty = match self.cu.values.index_to_key(inst) {
-					value::Key::TypeUnion(_) => {
+					value::Key::Type(value::Type::Union(_)) => {
 						let u = self.cu.values.index_to_value(inst).as_union();
 						let u = u.as_ref();
 						if let Some(idx) = u.field_idx_by_name(field) {
@@ -2763,11 +2882,11 @@ impl<'a> Sema<'a> {
 					);
 					return Err(AnalyzeError::AnalysisFailed);
 				};
-				let ty = value::Key::TypePtr(TypePtr {
+				let ty = value::Key::Type(value::Type::Ptr(TypePtr {
 					pointee_ty,
 					packed: None,
 					is_const: *is_const,
-				});
+				}));
 				let ty = vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&ty));
 				self.vuir_map.insert(id, ty);
 				Ok((ty, ControlFlow::May))
@@ -2775,7 +2894,7 @@ impl<'a> Sema<'a> {
 			vuir::Opcode::TypeSlice { elem: pointee_ty, .. } => {
 				let pointee_ty = &self.resolve_inst(pointee_ty);
 				let pointee_ty = self.try_resolve_comptime_value(pointee_ty).unwrap();
-				let ty = value::Key::TypeSlice(TypeSlice { pointee_ty });
+				let ty = value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty }));
 				let ty = vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&ty));
 				self.vuir_map.insert(id, ty);
 				Ok((ty, ControlFlow::May))
@@ -2815,7 +2934,7 @@ impl<'a> Sema<'a> {
 				let ty = vtir::InstructionRef::Interned(
 					self.cu
 						.values
-						.intern_trivial(&value::Key::TypeArray(value::TypeArray { elem_ty, len })),
+						.intern_trivial(&value::Key::Type(value::Type::Array(value::TypeArray { elem_ty, len }))),
 				);
 				self.vuir_map.insert(id, ty);
 				Ok((ty, ControlFlow::May))
@@ -2871,7 +2990,9 @@ impl<'a> Sema<'a> {
 				// For tagged unions, extract the tag and switch on that
 				let original_operand_ty = self.type_of(&operand_ref);
 				let operand_ref = {
-					if let (value::Key::TypeUnion(_), value::Value::Union(u)) = self.cu.values.index_to_key_value(original_operand_ty) {
+					if let (value::Key::Type(value::Type::Union(_)), value::Value::Union(u)) =
+						self.cu.values.index_to_key_value(original_operand_ty)
+					{
 						let u = u.as_ref();
 						if let Some(tag_ty) = u.tag_ty {
 							self.inst(block, vtir::Opcode::UnionTag {
@@ -2983,7 +3104,10 @@ impl<'a> Sema<'a> {
 				// Check exhaustiveness: else is required unless switching on an enum/union
 				// and all variants are covered
 				if else_body.is_none() {
-					let exhaustive_ty = if matches!(self.cu.values.index_to_key(original_operand_ty), value::Key::TypeUnion(_)) {
+					let exhaustive_ty = if matches!(
+						self.cu.values.index_to_key(original_operand_ty),
+						value::Key::Type(value::Type::Union(_))
+					) {
 						original_operand_ty
 					} else {
 						operand_ty
@@ -3033,7 +3157,7 @@ impl<'a> Sema<'a> {
 
 				let (key, value_ref) = self.cu.values.index_to_key_value(union_ty);
 				match (key, value_ref) {
-					(value::Key::TypeUnion(_), value::Value::Union(u)) if let Some(tag_ty) = u.tag_ty => {
+					(value::Key::Type(value::Type::Union(_)), value::Value::Union(u)) if let Some(tag_ty) = u.tag_ty => {
 						let field_idx = {
 							let pattern = self.resolve_inst(case_pattern);
 							let pattern_enum_tag = self.coerce(block, tag_ty, pattern, span)?.as_interned();
@@ -3088,11 +3212,11 @@ impl<'a> Sema<'a> {
 					Ok((inst, ControlFlow::May))
 				} else {
 					let ty = self.type_of(&rvalue);
-					let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+					let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 						pointee_ty: ty,
 						packed: None,
 						is_const: false,
-					}));
+					})));
 					let inst = self.inst(block, vtir::Opcode::StackAlloc { ty: ptr_ty });
 					self.inst(block, vtir::Opcode::Store { src: rvalue, dst: inst });
 					self.vuir_map.insert(id, inst);
@@ -3139,8 +3263,10 @@ impl<'a> Sema<'a> {
 			// then check if we can perform arithmetic ops between both types
 			match (self.cu.values.index_to_key(lhs_ty), self.cu.values.index_to_key(rhs_ty)) {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
-				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
-				(value::Key::TypeInt { .. }, value::Key::TypeAnyint) => {
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Int { .. })) => {
+					(rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs)
+				},
+				(value::Key::Type(value::Type::Int { .. }), value::Key::Type(value::Type::Anyint)) => {
 					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
@@ -3246,12 +3372,36 @@ impl<'a> Sema<'a> {
 		ty: value::Index,
 		value: Anyint,
 	) -> Anyint {
-		let (signed, bits) = match self.cu.values.index_to_key(ty) {
-			value::Key::TypeInt { signed, bits } => (*signed, *bits as u64),
-			value::Key::TypeIsize => (true, self.cu.resolved_target.ptr_width_in_bits as u64),
-			value::Key::TypeUsize => (false, self.cu.resolved_target.ptr_width_in_bits as u64),
+		let value::Key::Type(ty) = self.cu.values.index_to_key(ty) else {
+			return value;
+		};
+		let (signed, bits) = match ty {
+			value::Type::Int { signed, bits } => (*signed, *bits as u64),
+			value::Type::Isize => (true, self.cu.resolved_target.ptr_width_in_bits as u64),
+			value::Type::Usize => (false, self.cu.resolved_target.ptr_width_in_bits as u64),
 			// `Anyint` aren't subject to wrap semantic
-			_ => return value,
+			value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::F16
+			| value::Type::F32
+			| value::Type::F64
+			| value::Type::F128
+			| value::Type::Bool
+			| value::Type::Void
+			| value::Type::Struct(_)
+			| value::Type::Enum(_)
+			| value::Type::Union(_)
+			| value::Type::Fn(_)
+			| value::Type::Ptr(_)
+			| value::Type::Slice(_)
+			| value::Type::Array(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => return value,
 		};
 
 		let one = Anyint::from(1u64);
@@ -3303,11 +3453,11 @@ impl<'a> Sema<'a> {
 			let is_valid = |k: &value::Key| {
 				matches!(
 					k,
-					value::Key::TypeInt { .. }
-						| value::Key::TypeAnyint
-						| value::Key::TypeIsize
-						| value::Key::TypeUsize
-						| value::Key::TypeBool
+					value::Key::Type(value::Type::Int { .. })
+						| value::Key::Type(value::Type::Anyint)
+						| value::Key::Type(value::Type::Isize)
+						| value::Key::Type(value::Type::Usize)
+						| value::Key::Type(value::Type::Bool)
 				)
 			};
 
@@ -3331,12 +3481,14 @@ impl<'a> Sema<'a> {
 
 			match (lhs_key, rhs_key) {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
-				(value::Key::TypeAnyint, value::Key::TypeInt { .. })
-				| (value::Key::TypeAnyint, value::Key::TypeUsize)
-				| (value::Key::TypeAnyint, value::Key::TypeIsize) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
-				(value::Key::TypeInt { .. }, value::Key::TypeAnyint)
-				| (value::Key::TypeUsize, value::Key::TypeAnyint)
-				| (value::Key::TypeIsize, value::Key::TypeAnyint) => {
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Int { .. }))
+				| (value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Usize))
+				| (value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Isize)) => {
+					(rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs)
+				},
+				(value::Key::Type(value::Type::Int { .. }), value::Key::Type(value::Type::Anyint))
+				| (value::Key::Type(value::Type::Usize), value::Key::Type(value::Type::Anyint))
+				| (value::Key::Type(value::Type::Isize), value::Key::Type(value::Type::Anyint)) => {
 					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
@@ -3376,7 +3528,7 @@ impl<'a> Sema<'a> {
 							u64::MAX
 						});
 						// For concrete types, check shift >= bit_width
-						if !matches!(self.cu.values.index_to_key(ty), value::Key::TypeAnyint) {
+						if !matches!(self.cu.values.index_to_key(ty), value::Key::Type(value::Type::Anyint)) {
 							let bit_width = self.cu.values.type_bit_size(ty) as u64;
 							if shift >= bit_width && !matches!(inst, vuir::Opcode::ShlWrap { .. }) {
 								self.push_error(
@@ -3399,7 +3551,7 @@ impl<'a> Sema<'a> {
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 						let shift: u64 = rhs.to_u64().unwrap_or(u64::MAX);
-						if !matches!(self.cu.values.index_to_key(ty), value::Key::TypeAnyint) {
+						if !matches!(self.cu.values.index_to_key(ty), value::Key::Type(value::Type::Anyint)) {
 							let bit_width = self.cu.values.type_bit_size(ty) as u64;
 							if shift >= bit_width && !matches!(inst, vuir::Opcode::ShrWrap { .. }) {
 								self.push_error(
@@ -3462,7 +3614,11 @@ impl<'a> Sema<'a> {
 
 		let is_valid = matches!(
 			op_key,
-			value::Key::TypeInt { .. } | value::Key::TypeAnyint | value::Key::TypeIsize | value::Key::TypeUsize | value::Key::TypeBool
+			value::Key::Type(value::Type::Int { .. })
+				| value::Key::Type(value::Type::Anyint)
+				| value::Key::Type(value::Type::Isize)
+				| value::Key::Type(value::Type::Usize)
+				| value::Key::Type(value::Type::Bool)
 		);
 
 		if !is_valid {
@@ -3501,8 +3657,10 @@ impl<'a> Sema<'a> {
 			let rhs_ty = self.type_of(&rhs);
 			match (self.cu.values.index_to_key(lhs_ty), self.cu.values.index_to_key(rhs_ty)) {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
-				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
-				(value::Key::TypeInt { .. }, value::Key::TypeAnyint) => {
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Int { .. })) => {
+					(rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs)
+				},
+				(value::Key::Type(value::Type::Int { .. }), value::Key::Type(value::Type::Anyint)) => {
 					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
@@ -3584,13 +3742,13 @@ impl<'a> Sema<'a> {
 		let lhs_ty = self.type_of(&lhs);
 
 		let (lhs_pointee_ty, lhs_is_pointer_to) = match self.cu.values.index_to_key(lhs_ty) {
-			value::Key::TypePtr(ptr) => (ptr.pointee_ty, true),
+			value::Key::Type(value::Type::Ptr(ptr)) => (ptr.pointee_ty, true),
 			_ => (lhs_ty, false),
 		};
 
 		let inst = match self.cu.values.index_to_key_value(lhs_pointee_ty) {
 			// lhs is a type
-			(value::Key::TypeType, _) => {
+			(value::Key::Type(value::Type::Type), _) => {
 				let lhs = if lhs_is_pointer_to {
 					self.analyze_load(block, lhs, span)?
 				} else {
@@ -3598,7 +3756,7 @@ impl<'a> Sema<'a> {
 				};
 				let lhs = self.try_resolve_comptime_value(&lhs).unwrap();
 				match self.cu.values.index_to_key_value(lhs) {
-					(value::Key::TypeStruct(s), value::Value::Struct(r#struct)) => {
+					(value::Key::Type(value::Type::Struct(s)), value::Value::Struct(r#struct)) => {
 						let r#struct = r#struct.as_ref();
 						let decl = self
 							.cu
@@ -3611,7 +3769,7 @@ impl<'a> Sema<'a> {
 						let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
 						vtir::InstructionRef::Interned(value)
 					},
-					(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
+					(value::Key::Type(value::Type::Enum(_)), value::Value::Enum(e)) => {
 						if let Some(decl) = self
 							.cu
 							.namespaces
@@ -3630,7 +3788,7 @@ impl<'a> Sema<'a> {
 						};
 						vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&tag))
 					},
-					(value::Key::TypeUnion(_), value::Value::Union(u)) => {
+					(value::Key::Type(value::Type::Union(_)), value::Value::Union(u)) => {
 						let u = u.as_ref();
 						// check if it's a union field (tag value)
 						if let Some(field_idx) = u.field_idx_by_name(field) {
@@ -3662,7 +3820,7 @@ impl<'a> Sema<'a> {
 				}
 			},
 			// lhs is a value
-			(value::Key::TypeStruct(s), value::Value::Struct(r#struct)) => {
+			(value::Key::Type(value::Type::Struct(s)), value::Value::Struct(r#struct)) => {
 				let r#struct = r#struct.as_ref();
 				if let Some(field_idx) = r#struct.field_idx_by_name(field) {
 					let field_ty = r#struct.fields[field_idx].ty;
@@ -3688,7 +3846,7 @@ impl<'a> Sema<'a> {
 					return Err(AnalyzeError::AnalysisFailed);
 				}
 			},
-			(value::Key::TypePtr(ptr), _) => {
+			(value::Key::Type(value::Type::Ptr(ptr)), _) => {
 				let pointee_ty = ptr.pointee_ty;
 				let value::Value::Struct(r#struct) = self.cu.values.index_to_value(pointee_ty) else {
 					self.push_error(
@@ -3745,7 +3903,7 @@ impl<'a> Sema<'a> {
 	) -> Result<vtir::InstructionRef, AnalyzeError> {
 		let lhs_ty = self.type_of(&lhs);
 		let lhs_ptr_ty = match self.cu.values.index_to_key(lhs_ty) {
-			value::Key::TypePtr(ptr) => *ptr,
+			value::Key::Type(value::Type::Ptr(ptr)) => *ptr,
 			test => {
 				let lhs = self.cu.values.index_to_key_value(lhs.as_interned());
 				self.push_error(
@@ -3762,13 +3920,13 @@ impl<'a> Sema<'a> {
 
 		// if pointee is a pointer, dereference it, allow one dereference at most
 		let (lhs_pointee_ty, lhs_is_ptr) = match self.cu.values.index_to_key(lhs_ptr_ty.pointee_ty) {
-			value::Key::TypePtr(ptr) => (ptr.pointee_ty, true),
+			value::Key::Type(value::Type::Ptr(ptr)) => (ptr.pointee_ty, true),
 			_ => (lhs_ptr_ty.pointee_ty, false),
 		};
 
 		let inst = match self.cu.values.index_to_key_value(lhs_pointee_ty) {
 			// lhs is a type
-			(value::Key::TypeType, _) => {
+			(value::Key::Type(value::Type::Type), _) => {
 				// load the field pointer
 				let lhs = self.analyze_load(block, lhs, span)?;
 
@@ -3777,7 +3935,7 @@ impl<'a> Sema<'a> {
 
 				let lhs = self.try_resolve_comptime_value(&lhs).unwrap();
 				match self.cu.values.index_to_key_value(lhs) {
-					(value::Key::TypeStruct(s), value::Value::Struct(r#struct)) => {
+					(value::Key::Type(value::Type::Struct(s)), value::Value::Struct(r#struct)) => {
 						let r#struct = r#struct.as_ref();
 						let decl = self
 							.cu
@@ -3790,18 +3948,18 @@ impl<'a> Sema<'a> {
 
 						// TODO(zino): Unify with other places we get decl value... where we get ptr
 						let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
-						let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+						let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 							pointee_ty: self.cu.values.type_of_interned(value),
 							packed: None,
 							is_const: true,
-						}));
+						})));
 						let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
 							ty: ptr_ty,
 							kind: PtrKind::Decl(decl),
 						}));
 						vtir::InstructionRef::Interned(ptr)
 					},
-					(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
+					(value::Key::Type(value::Type::Enum(_)), value::Value::Enum(e)) => {
 						if let Some(field_idx) = e.field_idx_by_name(field) {
 							let tag = value::Key::EnumTag {
 								enum_ty: lhs,
@@ -3823,7 +3981,7 @@ impl<'a> Sema<'a> {
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 					},
-					(value::Key::TypeUnion(_), value::Value::Union(u)) => {
+					(value::Key::Type(value::Type::Union(_)), value::Value::Union(u)) => {
 						let u = u.as_ref();
 						// Check if it's a union field (tag value)
 						if let Some(field_idx) = u.field_idx_by_name(field) {
@@ -3857,15 +4015,15 @@ impl<'a> Sema<'a> {
 				}
 			},
 			// lhs is a value
-			(value::Key::TypeStruct(s), value::Value::Struct(r#struct)) => {
+			(value::Key::Type(value::Type::Struct(s)), value::Value::Struct(r#struct)) => {
 				let r#struct = r#struct.as_ref();
 				if let Some(field_idx) = r#struct.field_idx_by_name(field) {
 					let field_ty = r#struct.fields[field_idx].ty;
-					let ptr_to_field_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+					let ptr_to_field_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 						pointee_ty: field_ty,
 						packed: None,
 						is_const: lhs_ptr_ty.is_const,
-					}));
+					})));
 					let struct_ptr = if lhs_is_ptr { self.analyze_load(block, lhs, span)? } else { lhs };
 					self.inst(block, vtir::Opcode::StructFieldPtr {
 						struct_ptr,
@@ -3911,11 +4069,11 @@ impl<'a> Sema<'a> {
 		let Some(value) = self.cu.get_or_analyze_decl_value(decl)? else {
 			return Err(AnalyzeError::AnalysisFailed);
 		};
-		let ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
+		let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 			pointee_ty: self.cu.values.type_of_interned(value),
 			packed: None,
 			is_const: true,
-		}));
+		})));
 		let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
 			ty: ptr_ty,
 			kind: PtrKind::Decl(decl),
@@ -3935,7 +4093,7 @@ impl<'a> Sema<'a> {
 
 		let array_ptr_ty = self.type_of(&array_ptr);
 		let array_pointee_ty = match self.cu.values.index_to_key(array_ptr_ty) {
-			value::Key::TypePtr(ptr) => ptr.pointee_ty,
+			value::Key::Type(value::Type::Ptr(ptr)) => ptr.pointee_ty,
 			_ => {
 				self.push_error(
 					Diagnostic::error()
@@ -3950,21 +4108,21 @@ impl<'a> Sema<'a> {
 		};
 
 		let inst = match self.cu.values.index_to_key(array_pointee_ty) {
-			value::Key::TypeSlice(slice) => {
-				let elem_ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+			value::Key::Type(value::Type::Slice(slice)) => {
+				let elem_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 					pointee_ty: slice.pointee_ty,
 					packed: None,
 					is_const: false, // TODO(zino): const
-				}));
+				})));
 				let slice = self.analyze_load(block, array_ptr, &span.span)?; // TODO(zino): analyze_load should use diagspan
 				self.inst(block, vtir::Opcode::SliceElemPtr { slice, index, elem_ptr_ty })
 			},
-			value::Key::TypeArray(array) => {
-				let elem_ptr_ty = self.cu.values.intern_trivial(&value::Key::TypePtr(value::TypePtr {
+			value::Key::Type(value::Type::Array(array)) => {
+				let elem_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
 					pointee_ty: array.elem_ty,
 					packed: None,
 					is_const: false, // TODO(zino): const
-				}));
+				})));
 				self.inst(block, vtir::Opcode::PtrElemPtr {
 					array_ptr,
 					index,
@@ -4060,7 +4218,7 @@ impl<'a> Sema<'a> {
 		span: &Span,
 	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
 		let ty = {
-			if matches!(*self.cu.values.index_to_key(ty), value::Key::TypeStruct { .. }) {
+			if matches!(*self.cu.values.index_to_key(ty), value::Key::Type(value::Type::Struct(..))) {
 				Ok(ty)
 			} else {
 				self.push_error(
@@ -4152,7 +4310,7 @@ impl<'a> Sema<'a> {
 		span: &Span,
 	) -> Result<(vtir::InstructionRef, ControlFlow), AnalyzeError> {
 		let value = match *self.cu.values.index_to_key(ty) {
-			value::Key::TypeSlice(slice) if slice.pointee_ty == self.cu.values.common.anyptr_t => {
+			value::Key::Type(value::Type::Slice(slice)) if slice.pointee_ty == self.cu.values.common.anyptr_t => {
 				let mut coerced = BumpVec::with_capacity_in(elements.len(), self.instructions_payload_alloc);
 				for element in elements {
 					let value = self.resolve_inst(element);
@@ -4163,7 +4321,7 @@ impl<'a> Sema<'a> {
 					elements: coerced.into_bump_slice(),
 				})
 			},
-			value::Key::TypeArray(array) => {
+			value::Key::Type(value::Type::Array(array)) => {
 				if elements.len() as u64 != array.len {
 					self.push_error(
 						Diagnostic::error()
@@ -4236,28 +4394,28 @@ impl<'a> Sema<'a> {
 		// Not equals, can we coerce both types ?
 		let result: Result<vtir::InstructionRef, String> = 'msg: {
 			match (self.cu.values.index_to_key(inst_ty), self.cu.values.index_to_key(dst_ty)) {
-				(_, value::Key::TypeType) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(inst),
-				(value::Key::TypeAnyint, value::Key::TypeAnyptr) if !self.blocks[block].comptime => {
+				(_, value::Key::Type(value::Type::Type)) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(inst),
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Anyptr)) if !self.blocks[block].comptime => {
 					let concrete = self.coerce(block, self.cu.values.common.i32_t, inst, span)?;
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
 						value: concrete,
 						value_ty: self.cu.values.common.i32_t,
 					}))
 				},
-				(_, value::Key::TypeAnyptr) if !self.cu.values.type_is_comptime_only(inst_ty) => {
+				(_, value::Key::Type(value::Type::Anyptr)) if !self.cu.values.type_is_comptime_only(inst_ty) => {
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
 						value: inst,
 						value_ty: inst_ty,
 					}))
 				},
-				(_, value::Key::TypeAnyptr) => Err(format!(
+				(_, value::Key::Type(value::Type::Anyptr)) => Err(format!(
 					"cannot coerce comptime-only value of type `{}` to runtime `anyptr`",
 					self.cu.values.display_index(inst_ty)
 				)),
-				(_, value::Key::TypeAny) if self.blocks[block].comptime => Ok(inst),
+				(_, value::Key::Type(value::Type::Any)) if self.blocks[block].comptime => Ok(inst),
 
 				// Integer types conversions
-				(value::Key::TypeAnyint, value::Key::TypeUsize | value::Key::TypeIsize) => {
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Usize) | value::Key::Type(value::Type::Isize)) => {
 					let value::Key::Int { value, .. } = self.cu.values.index_to_key(inst.as_interned()) else {
 						unreachable!("encountered a comptime_int that is not a int");
 					};
@@ -4267,7 +4425,7 @@ impl<'a> Sema<'a> {
 					let value = value::Key::Int { ty: dst_ty, value: *value };
 					Ok(vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value)))
 				},
-				(value::Key::TypeAnyint, value::Key::TypeInt { signed, bits }) => {
+				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Int { signed, bits })) => {
 					if let Some(_value) = self.try_resolve_comptime_value(&inst) {
 						let value::Key::Int { value, .. } = self.cu.values.index_to_key(inst.as_interned()) else {
 							unreachable!("encountered a comptime_int that is not a int");
@@ -4298,16 +4456,22 @@ impl<'a> Sema<'a> {
 						Ok(self.inst(block, vtir::Opcode::UnsafeIntCast { src: inst, dst_ty }))
 					}
 				},
-				(value::Key::TypeAnyfloat, value::Key::TypeF16 | value::Key::TypeF32 | value::Key::TypeF64 | value::Key::TypeF128) => {
+				(
+					value::Key::Type(value::Type::Anyfloat),
+					value::Key::Type(value::Type::F16)
+					| value::Key::Type(value::Type::F32)
+					| value::Key::Type(value::Type::F64)
+					| value::Key::Type(value::Type::F128),
+				) => {
 					let value::Key::Float { value, .. } = self.cu.values.index_to_key(inst.as_interned()) else {
 						unreachable!("encountered a comptile_float that is not a float");
 					};
 
 					let (dst_ty_max, converted_val) = match *self.cu.values.index_to_key(dst_ty) {
-						value::Key::TypeF16 => (f16::MAX as f128, value.0 as f16 as f128),
-						value::Key::TypeF32 => (f32::MAX as f128, value.0 as f32 as f128),
-						value::Key::TypeF64 => (f64::MAX as f128, value.0 as f64 as f128),
-						value::Key::TypeF128 => (f128::MAX, value.0),
+						value::Key::Type(value::Type::F16) => (f16::MAX as f128, value.0 as f16 as f128),
+						value::Key::Type(value::Type::F32) => (f32::MAX as f128, value.0 as f32 as f128),
+						value::Key::Type(value::Type::F64) => (f64::MAX as f128, value.0 as f64 as f128),
+						value::Key::Type(value::Type::F128) => (f128::MAX, value.0),
 						_ => unreachable!(),
 					};
 
@@ -4333,7 +4497,7 @@ impl<'a> Sema<'a> {
 				},
 
 				// Pointer conversions
-				(value::Key::TypePtr(ptr_src), value::Key::TypePtr(ptr_dst)) => {
+				(value::Key::Type(value::Type::Ptr(ptr_src)), value::Key::Type(value::Type::Ptr(ptr_dst))) => {
 					// only same pointee ty
 					if ptr_src.pointee_ty != ptr_dst.pointee_ty {
 						break 'msg Err(format!(
@@ -4353,7 +4517,7 @@ impl<'a> Sema<'a> {
 				},
 
 				// enum literal to enum
-				(value::Key::TypeEnumLiteral, value::Key::TypeEnum(..)) => {
+				(value::Key::Type(value::Type::EnumLiteral), value::Key::Type(value::Type::Enum(..))) => {
 					let value::Key::EnumLiteral(enum_lit) = self.cu.values.index_to_key(inst.as_interned()) else {
 						unreachable!();
 					};
@@ -4424,23 +4588,49 @@ impl<'a> Sema<'a> {
 		&self,
 		ty: value::Index,
 	) -> Option<u64> {
-		match self.cu.values.index_to_key_value(ty) {
-			(value::Key::TypeInt { bits, .. }, _) => Some(*bits as u64),
-			(value::Key::TypeBool, _) => Some(1),
-			(value::Key::TypeF16, _) => Some(16),
-			(value::Key::TypeF32, _) => Some(32),
-			(value::Key::TypeF64, _) => Some(64),
-			(value::Key::TypeF128, _) => Some(128),
-			(value::Key::TypeVoid, _) => Some(0),
-			(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
+		let (value::Key::Type(ty), value) = self.cu.values.index_to_key_value(ty) else {
+			return None;
+		};
+		match ty {
+			value::Type::Int { bits, .. } => Some(*bits as u64),
+			value::Type::Bool => Some(1),
+			value::Type::F16 => Some(16),
+			value::Type::F32 => Some(32),
+			value::Type::F64 => Some(64),
+			value::Type::F128 => Some(128),
+			value::Type::Void => Some(0),
+			value::Type::Struct(_) => {
+				let value::Value::Struct(r#struct) = value else {
+					unreachable!("struct type without struct value")
+				};
 				if let StructLayout::Packed { fields_bits, .. } = r#struct.as_ref().layout {
 					Some(fields_bits as u64)
 				} else {
 					None
 				}
 			},
-			(value::Key::TypeEnum(_), value::Value::Enum(r#enum)) => self.known_bit_size(r#enum.tag_ty),
-			_ => None,
+			value::Type::Enum(_) => {
+				let value::Value::Enum(r#enum) = value else {
+					unreachable!("enum type without enum value")
+				};
+				self.known_bit_size(r#enum.tag_ty)
+			},
+			value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::Usize
+			| value::Type::Isize
+			| value::Type::Union(_)
+			| value::Type::Fn(_)
+			| value::Type::Ptr(_)
+			| value::Type::Slice(_)
+			| value::Type::Array(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => None,
 		}
 	}
 
@@ -4452,9 +4642,20 @@ impl<'a> Sema<'a> {
 		cases: &[vtir::SwitchCase],
 		span: &Span,
 	) -> bool {
-		let (tag_fields, union_fields) = match self.cu.values.index_to_key_value(operand_ty) {
-			(value::Key::TypeEnum(_), value::Value::Enum(e)) => (e.fields, None),
-			(value::Key::TypeUnion(_), value::Value::Union(u)) => {
+		let (value::Key::Type(ty), value) = self.cu.values.index_to_key_value(operand_ty) else {
+			unreachable!("switch operand type is not a type")
+		};
+		let (tag_fields, union_fields) = match ty {
+			value::Type::Enum(_) => {
+				let value::Value::Enum(e) = value else {
+					unreachable!("enum type without enum value")
+				};
+				(e.fields, None)
+			},
+			value::Type::Union(_) => {
+				let value::Value::Union(u) = value else {
+					unreachable!("union type without union value")
+				};
 				let union_ty = u.as_ref();
 				let Some(tag_ty) = union_ty.tag_ty else {
 					self.push_error(
@@ -4464,13 +4665,36 @@ impl<'a> Sema<'a> {
 					);
 					return false;
 				};
-				let (value::Key::TypeEnum(_), value::Value::Enum(tag_enum)) = self.cu.values.index_to_key_value(tag_ty) else {
+				let (value::Key::Type(value::Type::Enum(_)), value::Value::Enum(tag_enum)) = self.cu.values.index_to_key_value(tag_ty)
+				else {
 					unreachable!("tagged union tag type must be an enum");
 				};
 				assert_eq!(union_ty.fields.len(), tag_enum.fields.len());
 				(tag_enum.fields, Some(union_ty.fields))
 			},
-			_ => {
+			value::Type::Int { .. }
+			| value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::Usize
+			| value::Type::Isize
+			| value::Type::F16
+			| value::Type::F32
+			| value::Type::F64
+			| value::Type::F128
+			| value::Type::Bool
+			| value::Type::Void
+			| value::Type::Struct(_)
+			| value::Type::Fn(_)
+			| value::Type::Ptr(_)
+			| value::Type::Slice(_)
+			| value::Type::Array(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => {
 				self.push_error(
 					Diagnostic::error()
 						.with_message("switch must have an else branch")
@@ -4591,21 +4815,23 @@ impl<'a> Sema<'a> {
 		arg_ty: value::Index,
 		span: Span,
 	) -> Result<(vtir::InstructionRef, value::Index), AnalyzeError> {
-		match self.cu.values.index_to_key(arg_ty) {
+		let value::Key::Type(ty) = self.cu.values.index_to_key(arg_ty) else {
+			unreachable!("variadic argument type is not a type")
+		};
+		match ty {
 			// Types that need no promotion
-			value::Key::TypeF64 | value::Key::TypeBool => Ok((resolved_value, arg_ty)),
-			value::Key::TypeInt { bits: 64, .. } => Ok((resolved_value, arg_ty)),
+			value::Type::F64 | value::Type::Bool => Ok((resolved_value, arg_ty)),
+			value::Type::Int { bits: 64, .. } => Ok((resolved_value, arg_ty)),
 
 			// sauf quand les ptr sont fatos
-			value::Key::TypePtr(_) => Ok((resolved_value, arg_ty)),
+			value::Type::Ptr(_) => Ok((resolved_value, arg_ty)),
 
 			// isize/usize → i64/u64
-			value::Key::TypeIsize | value::Key::TypeUsize => {
-				let dst_ty = match self.cu.values.index_to_key(arg_ty) {
-					value::Key::TypeUsize => self.cu.values.common.u64_t,
-					value::Key::TypeIsize => self.cu.values.common.i64_t,
-					// SAFETY: covered by match arms above
-					_ => unsafe { unreachable_unchecked() },
+			value::Type::Isize | value::Type::Usize => {
+				let dst_ty = if *ty == value::Type::Usize {
+					self.cu.values.common.u64_t
+				} else {
+					self.cu.values.common.i64_t
 				};
 				let promoted = if let Some(value) = self.try_resolve_comptime_value(&resolved_value) {
 					let value::Key::Int { value, .. } = self.cu.values.index_to_key(value) else {
@@ -4623,7 +4849,7 @@ impl<'a> Sema<'a> {
 			},
 
 			// Integers 1-63 bits → i64/u64 (preserving signedness)
-			value::Key::TypeInt { signed, bits } => {
+			value::Type::Int { signed, bits } => {
 				if *bits > 64 {
 					self.push_error(
 						Diagnostic::error()
@@ -4653,7 +4879,7 @@ impl<'a> Sema<'a> {
 			},
 
 			// f16, f32 → f64
-			value::Key::TypeF16 | value::Key::TypeF32 => {
+			value::Type::F16 | value::Type::F32 => {
 				let promoted = if let Some(value) = self.try_resolve_comptime_value(&resolved_value) {
 					let value::Key::Float { value, .. } = self.cu.values.index_to_key(value) else {
 						unreachable!("float comptime value must be Float");
@@ -4673,7 +4899,23 @@ impl<'a> Sema<'a> {
 			},
 
 			// Unsupported types
-			_ => {
+			value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::F128
+			| value::Type::Void
+			| value::Type::Struct(_)
+			| value::Type::Enum(_)
+			| value::Type::Union(_)
+			| value::Type::Fn(_)
+			| value::Type::Slice(_)
+			| value::Type::Array(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => {
 				self.push_error(
 					Diagnostic::error()
 						.with_message(format!(

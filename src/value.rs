@@ -358,6 +358,44 @@ pub struct NamespaceType {
 	pub captures: &'static [Capture],
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum Type {
+	// Types
+	Int {
+		signed: bool,
+		bits: u16,
+	},
+	Anyint,
+	Anyfloat,
+	Usize,
+	Isize,
+	F16,
+	F32,
+	F64,
+	F128,
+	Bool,
+	Void,
+	Struct(NamespaceType),
+	Enum(NamespaceType),
+	Union(NamespaceType),
+	Fn(TypeFn),
+	Ptr(TypePtr),
+	Slice(TypeSlice),
+	Array(TypeArray),
+	NullPtr,
+
+	/// Generic type that can be any type possible
+	Any,
+	/// Runtime type-erased pointer plus compiler type identity
+	Anyptr,
+	/// Indicate a unknown generic which should be resolved
+	GenericPoison,
+
+	Type,
+	Never,
+	EnumLiteral,
+}
+
 /// Hashable and comparable part of a `Value` used to retrieve its index inside the `ValueMap`
 ///
 /// # Triviality
@@ -405,44 +443,14 @@ pub enum Key {
 	},
 
 	// Types
-	TypeInt {
-		signed: bool,
-		bits: u16,
-	},
-	TypeAnyint,
-	TypeAnyfloat,
-	TypeUsize,
-	TypeIsize,
-	TypeF16,
-	TypeF32,
-	TypeF64,
-	TypeF128,
-	TypeBool,
-	TypeVoid,
-	TypeStruct(NamespaceType),
-	TypeEnum(NamespaceType),
-	TypeUnion(NamespaceType),
-	TypeFn(TypeFn),
-	TypePtr(TypePtr),
-	TypeSlice(TypeSlice),
-	TypeArray(TypeArray),
-	TypeNullPtr,
+	Type(Type),
 
-	/// Generic type that can be any type possible
-	TypeAny,
-	/// Runtime type-erased pointer plus compiler type identity
-	TypeAnyptr,
-	/// Indicate a unknown generic which should be resolved
-	TypeGenericPoison,
 	/// Per-param generic poison, unique per comptime type param,
 	/// so structural unification can distinguish different generics.
 	GenericPoison {
 		param_id: vuir::InstructionId,
 		name: internment::Intern<str>,
 	},
-	TypeType,
-	TypeNever,
-	TypeEnumLiteral,
 
 	// Misc
 	DeclRef {
@@ -454,28 +462,28 @@ pub enum Key {
 impl Key {
 	pub fn as_type_fn(&self) -> &TypeFn {
 		match self {
-			Key::TypeFn(t) => t,
+			Key::Type(Type::Fn(t)) => t,
 			_ => unreachable!("{self:?}"),
 		}
 	}
 
 	pub fn as_type_ptr(&self) -> &TypePtr {
 		match self {
-			Key::TypePtr(t) => t,
+			Key::Type(Type::Ptr(t)) => t,
 			_ => unreachable!("{self:?}"),
 		}
 	}
 
 	pub fn as_type_slice(&self) -> &TypeSlice {
 		match self {
-			Key::TypeSlice(t) => t,
+			Key::Type(Type::Slice(t)) => t,
 			_ => unreachable!("{self:?}"),
 		}
 	}
 
 	pub fn as_type_array(&self) -> &TypeArray {
 		match self {
-			Key::TypeArray(t) => t,
+			Key::Type(Type::Array(t)) => t,
 			_ => unreachable!("{self:?}"),
 		}
 	}
@@ -503,14 +511,14 @@ impl Key {
 
 	pub fn as_struct(&self) -> &NamespaceType {
 		match self {
-			Key::TypeStruct(s) => s,
+			Key::Type(Type::Struct(s)) => s,
 			_ => unreachable!("{self:?}"),
 		}
 	}
 
 	pub fn as_enum(&self) -> &NamespaceType {
 		match self {
-			Key::TypeEnum(e) => e,
+			Key::Type(Type::Enum(e)) => e,
 			_ => unreachable!("{self:?}"),
 		}
 	}
@@ -530,51 +538,19 @@ impl Key {
 	}
 
 	pub fn is_type(&self) -> bool {
-		matches!(
-			self,
-			Key::TypeAny
-				| Key::TypeAnyptr
-				| Key::TypeAnyint
-				| Key::TypeAnyfloat
-				| Key::TypeUsize
-				| Key::TypeIsize
-				| Key::TypeF16
-				| Key::TypeF32
-				| Key::TypeF64
-				| Key::TypeF128
-				| Key::TypeInt { .. }
-				| Key::TypeType
-				| Key::TypeBool
-				| Key::TypeVoid
-				| Key::TypeFn(..)
-				| Key::TypePtr(..)
-				| Key::TypeStruct(..)
-				| Key::TypeEnum(..)
-				| Key::TypeUnion(..)
-				| Key::TypeSlice(..)
-				| Key::TypeArray(..)
-				| Key::TypeAnyptr
-				| Key::TypeGenericPoison
-				| Key::TypeEnumLiteral
-				| Key::TypeNever
-				| Key::TypeNullPtr
-				| Key::TypeEnumLiteral
-				| Key::GenericPoison { .. }
-		)
+		matches!(self, Key::Type(_) | Key::GenericPoison { .. })
 	}
 
 	pub fn type_is_numeric(&self) -> bool {
 		matches!(
 			self,
-			Key::TypeInt { .. }
-				| Key::TypeAnyint
-				| Key::TypeAnyfloat
-				| Key::TypeF16
-				| Key::TypeF32
-				| Key::TypeF64
-				| Key::TypeF128
-				| Key::TypeIsize
-				| Key::TypeUsize
+			Key::Type(
+				Type::Int { .. }
+					| Type::Anyint | Type::Anyfloat
+					| Type::F16 | Type::F32
+					| Type::F64 | Type::F128
+					| Type::Isize | Type::Usize
+			)
 		)
 	}
 }
@@ -612,53 +588,70 @@ impl<'store> Display for DisplayIndex<'store> {
 	) -> std::fmt::Result {
 		let (key, value) = self.store.value_map.kv(self.index);
 		match key {
-			Key::TypeType => write!(f, "type"),
-			Key::TypeAny => write!(f, "any"),
-			Key::TypeAnyptr => write!(f, "anyptr"),
-			Key::TypeAnyint => write!(f, "anyint"),
-			Key::TypeAnyfloat => write!(f, "anyfloat"),
-			Key::TypeUsize => write!(f, "usize"),
-			Key::TypeIsize => write!(f, "isize"),
-			Key::TypeVoid => write!(f, "void"),
-			Key::TypeInt { signed, bits } => {
-				write!(f, "{}{}", if *signed { "i" } else { "u" }, bits)
+			Key::Type(ty) => match ty {
+				Type::Type => write!(f, "type"),
+				Type::Any => write!(f, "any"),
+				Type::Anyptr => write!(f, "anyptr"),
+				Type::Anyint => write!(f, "anyint"),
+				Type::Anyfloat => write!(f, "anyfloat"),
+				Type::Usize => write!(f, "usize"),
+				Type::Isize => write!(f, "isize"),
+				Type::Void => write!(f, "void"),
+				Type::Int { signed, bits } => {
+					write!(f, "{}{}", if *signed { "i" } else { "u" }, bits)
+				},
+				Type::F16 => write!(f, "f16"),
+				Type::F32 => write!(f, "f32"),
+				Type::F64 => write!(f, "f64"),
+				Type::F128 => write!(f, "f128"),
+				Type::Bool => write!(f, "bool"),
+				Type::Struct(_) => {
+					let s = value.load(Ordering::Relaxed).as_struct();
+					write!(f, "{}", s.name)
+				},
+				Type::Enum(_) => {
+					let e = value.load(Ordering::Relaxed).as_enum();
+					write!(f, "{}", e.name)
+				},
+				Type::Union(_) => {
+					let u = value.load(Ordering::Relaxed).as_union();
+					write!(f, "{}", u.name)
+				},
+				Type::GenericPoison => write!(f, "any_poison"),
+				Type::Ptr(ptr) => write!(f, "*{}", DisplayIndex {
+					store: self.store,
+					index: ptr.pointee_ty
+				}),
+				Type::Slice(slice) => write!(f, "[]{}", DisplayIndex {
+					store: self.store,
+					index: slice.pointee_ty
+				}),
+				Type::Array(arr) => write!(f, "[{}]{}", arr.len, DisplayIndex {
+					store: self.store,
+					index: arr.elem_ty
+				}),
+				Type::Fn(_) => write!(f, "fn"),
+				Type::NullPtr => write!(f, "nullptr"),
+				Type::Never => write!(f, "never"),
+				Type::EnumLiteral => write!(f, "enum_literal"),
 			},
-			Key::TypeF16 => write!(f, "f16"),
-			Key::TypeF32 => write!(f, "f32"),
-			Key::TypeF64 => write!(f, "f64"),
-			Key::TypeF128 => write!(f, "f128"),
-			Key::TypeBool => write!(f, "bool"),
-			Key::TypeStruct(s) => {
-				let s = value.load(Ordering::Relaxed).as_struct();
-				let s = s.as_ref();
-				write!(f, "{}", s.name)
-			},
-			Key::TypeEnum(e) => {
-				let e = value.load(Ordering::Relaxed).as_enum();
-				let e = e.as_ref();
-				write!(f, "{}", e.name)
-			},
-			Key::TypeUnion(_) => {
-				let u = value.load(Ordering::Relaxed).as_union();
-				let u = u.as_ref();
-				write!(f, "{}", u.name)
-			},
-			Key::TypeGenericPoison => write!(f, "any_poison"),
 			Key::GenericPoison { name, .. } => write!(f, "{}", name),
-			Key::TypePtr(ptr) => write!(f, "*{}", DisplayIndex {
-				store: self.store,
-				index: ptr.pointee_ty
-			}),
-			Key::TypeSlice(slice) => write!(f, "[]{}", DisplayIndex {
-				store: self.store,
-				index: slice.pointee_ty
-			}),
-			Key::TypeArray(arr) => write!(f, "[{}]{}", arr.len, DisplayIndex {
-				store: self.store,
-				index: arr.elem_ty
-			}),
-			Key::TypeNever => write!(f, "never"),
-			_ => write!(f, "<value {:?}>", key),
+			Key::Undefined { .. }
+			| Key::Str { .. }
+			| Key::Int { .. }
+			| Key::Float { .. }
+			| Key::Bool(_)
+			| Key::Ptr(_)
+			| Key::Fn(_)
+			| Key::EnumTag { .. }
+			| Key::Aggregate { .. }
+			| Key::NullPtr
+			| Key::Void
+			| Key::Unreachable
+			| Key::Union { .. }
+			| Key::DeclRef { .. }
+			| Key::FnDecl(_)
+			| Key::EnumLiteral(_) => write!(f, "<value {:?}>", key),
 		}
 	}
 }
@@ -804,39 +797,39 @@ impl ValueStore {
 		let common_types = {
 			CommonValues {
 				nullptr: value_map.entry(&Key::NullPtr).or_insert_with(Value::none),
-				anyint_t: value_map.entry(&Key::TypeAnyint).or_insert_with(Value::none),
-				anyfloat_t: value_map.entry(&Key::TypeAnyfloat).or_insert_with(Value::none),
-				void_t: value_map.entry(&Key::TypeVoid).or_insert_with(Value::none),
+				anyint_t: value_map.entry(&Key::Type(Type::Anyint)).or_insert_with(Value::none),
+				anyfloat_t: value_map.entry(&Key::Type(Type::Anyfloat)).or_insert_with(Value::none),
+				void_t: value_map.entry(&Key::Type(Type::Void)).or_insert_with(Value::none),
 				void_value: value_map.entry(&Key::Void).or_insert_with(Value::none),
-				any_t: value_map.entry(&Key::TypeAny).or_insert_with(Value::none),
-				anyptr_t: value_map.entry(&Key::TypeAnyptr).or_insert_with(Value::none),
-				type_t: value_map.entry(&Key::TypeType).or_insert_with(Value::none),
-				generic_poison_t: value_map.entry(&Key::TypeGenericPoison).or_insert_with(Value::none),
-				never_t: value_map.entry(&Key::TypeNever).or_insert_with(Value::none),
-				usize_t: value_map.entry(&Key::TypeUsize).or_insert_with(Value::none),
-				isize_t: value_map.entry(&Key::TypeIsize).or_insert_with(Value::none),
+				any_t: value_map.entry(&Key::Type(Type::Any)).or_insert_with(Value::none),
+				anyptr_t: value_map.entry(&Key::Type(Type::Anyptr)).or_insert_with(Value::none),
+				type_t: value_map.entry(&Key::Type(Type::Type)).or_insert_with(Value::none),
+				generic_poison_t: value_map.entry(&Key::Type(Type::GenericPoison)).or_insert_with(Value::none),
+				never_t: value_map.entry(&Key::Type(Type::Never)).or_insert_with(Value::none),
+				usize_t: value_map.entry(&Key::Type(Type::Usize)).or_insert_with(Value::none),
+				isize_t: value_map.entry(&Key::Type(Type::Isize)).or_insert_with(Value::none),
 				u16_t: value_map
-					.entry(&Key::TypeInt { signed: false, bits: 16 })
+					.entry(&Key::Type(Type::Int { signed: false, bits: 16 }))
 					.or_insert_with(Value::none),
 				u64_t: value_map
-					.entry(&Key::TypeInt { signed: false, bits: 64 })
+					.entry(&Key::Type(Type::Int { signed: false, bits: 64 }))
 					.or_insert_with(Value::none),
 				i64_t: value_map
-					.entry(&Key::TypeInt { signed: true, bits: 64 })
+					.entry(&Key::Type(Type::Int { signed: true, bits: 64 }))
 					.or_insert_with(Value::none),
 				u32_t: value_map
-					.entry(&Key::TypeInt { signed: false, bits: 32 })
+					.entry(&Key::Type(Type::Int { signed: false, bits: 32 }))
 					.or_insert_with(Value::none),
 				i32_t: value_map
-					.entry(&Key::TypeInt { signed: true, bits: 32 })
+					.entry(&Key::Type(Type::Int { signed: true, bits: 32 }))
 					.or_insert_with(Value::none),
-				f16_t: value_map.entry(&Key::TypeF16).or_insert_with(Value::none),
-				f32_t: value_map.entry(&Key::TypeF32).or_insert_with(Value::none),
-				f64_t: value_map.entry(&Key::TypeF64).or_insert_with(Value::none),
-				f128_t: value_map.entry(&Key::TypeF128).or_insert_with(Value::none),
-				bool_t: value_map.entry(&Key::TypeBool).or_insert_with(Value::none),
-				enum_literal_t: value_map.entry(&Key::TypeEnumLiteral).or_insert_with(Value::none),
-				nullptr_t: value_map.entry(&Key::TypeNullPtr).or_insert_with(Value::none),
+				f16_t: value_map.entry(&Key::Type(Type::F16)).or_insert_with(Value::none),
+				f32_t: value_map.entry(&Key::Type(Type::F32)).or_insert_with(Value::none),
+				f64_t: value_map.entry(&Key::Type(Type::F64)).or_insert_with(Value::none),
+				f128_t: value_map.entry(&Key::Type(Type::F128)).or_insert_with(Value::none),
+				bool_t: value_map.entry(&Key::Type(Type::Bool)).or_insert_with(Value::none),
+				enum_literal_t: value_map.entry(&Key::Type(Type::EnumLiteral)).or_insert_with(Value::none),
+				nullptr_t: value_map.entry(&Key::Type(Type::NullPtr)).or_insert_with(Value::none),
 				unreachable_value: value_map.entry(&Key::Unreachable).or_insert_with(Value::none),
 				true_value: value_map.entry(&Key::Bool(true)).or_insert_with(Value::none),
 				false_value: value_map.entry(&Key::Bool(false)).or_insert_with(Value::none),
@@ -886,30 +879,32 @@ impl ValueStore {
 	) -> Index {
 		match key {
 			// trivial
-			key @ (Key::TypeAny
-			| Key::TypeAnyptr
-			| Key::TypePtr(..)
-			| Key::TypeInt { .. }
-			| Key::TypeAnyfloat
-			| Key::TypeAnyint
-			| Key::TypeGenericPoison
+			key @ (Key::Type(
+				Type::Any
+				| Type::Anyptr
+				| Type::Ptr(..)
+				| Type::Int { .. }
+				| Type::Anyfloat
+				| Type::Anyint
+				| Type::GenericPoison
+				| Type::Usize
+				| Type::Isize
+				| Type::F16
+				| Type::F32
+				| Type::F64
+				| Type::F128
+				| Type::Type
+				| Type::Void
+				| Type::Bool
+				| Type::Slice(..)
+				| Type::Array(..)
+				| Type::Fn(..)
+				| Type::Never
+				| Type::Enum(..)
+				| Type::EnumLiteral
+				| Type::NullPtr,
+			)
 			| Key::GenericPoison { .. }
-			| Key::TypeUsize
-			| Key::TypeIsize
-			| Key::TypeF16
-			| Key::TypeF32
-			| Key::TypeF64
-			| Key::TypeF128
-			| Key::TypeType
-			| Key::TypeVoid
-			| Key::TypeBool
-			| Key::TypeSlice(..)
-			| Key::TypeArray(..)
-			| Key::TypeFn(..)
-			| Key::TypeNever
-			| Key::TypeEnum { .. }
-			| Key::TypeEnumLiteral
-			| Key::TypeNullPtr
 			| Key::Ptr(..)
 			| Key::Int { .. }
 			| Key::Float { .. }
@@ -927,7 +922,7 @@ impl ValueStore {
 			| Key::Undefined { .. }) => self.value_map.entry(key).or_insert_with(Value::none),
 
 			// non-trivial
-			key @ (Key::TypeStruct(..) | Key::TypeUnion(..) | Key::Fn(..)) => {
+			key @ (Key::Type(Type::Struct(..) | Type::Union(..)) | Key::Fn(..)) => {
 				panic!("cannot intern_trivial {key:?} as it is non-trivial, use the dedicated functions on the value store")
 			},
 		}
@@ -950,11 +945,11 @@ impl ValueStore {
 		&self,
 		value: Index,
 	) -> Index {
-		let ty = self.intern_trivial(&Key::TypePtr(TypePtr {
+		let ty = self.intern_trivial(&Key::Type(Type::Ptr(TypePtr {
 			pointee_ty: self.type_of_interned(value),
 			packed: None,
 			is_const: false,
-		}));
+		})));
 		self.intern_trivial(&Key::Ptr(Ptr {
 			ty,
 			kind: PtrKind::Value(value),
@@ -992,7 +987,23 @@ impl ValueStore {
 	) -> Option<vuir::InstructionId> {
 		match self.index_to_key(ty) {
 			Key::GenericPoison { param_id, .. } => Some(*param_id),
-			_ => None,
+			Key::Undefined { .. }
+			| Key::Str { .. }
+			| Key::Int { .. }
+			| Key::Float { .. }
+			| Key::Bool(_)
+			| Key::Ptr(_)
+			| Key::Fn(_)
+			| Key::EnumTag { .. }
+			| Key::Aggregate { .. }
+			| Key::NullPtr
+			| Key::Void
+			| Key::Unreachable
+			| Key::Union { .. }
+			| Key::Type(_)
+			| Key::DeclRef { .. }
+			| Key::FnDecl(_)
+			| Key::EnumLiteral(_) => None,
 		}
 	}
 
@@ -1013,13 +1024,54 @@ impl ValueStore {
 			return true;
 		}
 		match self.index_to_key(ty) {
-			Key::TypePtr(ptr) => self.type_contains_generic_poison(ptr.pointee_ty),
-			Key::TypeSlice(sl) => self.type_contains_generic_poison(sl.pointee_ty),
-			Key::TypeStruct(ns) | Key::TypeEnum(ns) | Key::TypeUnion(ns) => ns.captures.iter().any(|cap| match cap {
-				Capture::Comptime(cap) => self.type_contains_generic_poison(*cap),
-				Capture::Runtime(_) => false,
-			}),
-			_ => false,
+			Key::Type(ty) => match ty {
+				Type::Ptr(ptr) => self.type_contains_generic_poison(ptr.pointee_ty),
+				Type::Slice(slice) => self.type_contains_generic_poison(slice.pointee_ty),
+				Type::Array(array) => self.type_contains_generic_poison(array.elem_ty),
+				Type::Fn(function) => {
+					function.params.iter().any(|ty| self.type_contains_generic_poison(*ty))
+						|| self.type_contains_generic_poison(function.ret_ty)
+				},
+				Type::Struct(ns) | Type::Enum(ns) | Type::Union(ns) => ns.captures.iter().any(|cap| match cap {
+					Capture::Comptime(cap) => self.type_contains_generic_poison(*cap),
+					Capture::Runtime(_) => false,
+				}),
+				Type::GenericPoison => true,
+				Type::Int { .. }
+				| Type::Anyint
+				| Type::Anyfloat
+				| Type::Usize
+				| Type::Isize
+				| Type::F16
+				| Type::F32
+				| Type::F64
+				| Type::F128
+				| Type::Bool
+				| Type::Void
+				| Type::NullPtr
+				| Type::Any
+				| Type::Anyptr
+				| Type::Type
+				| Type::Never
+				| Type::EnumLiteral => false,
+			},
+			Key::GenericPoison { .. } => true,
+			Key::Undefined { .. }
+			| Key::Str { .. }
+			| Key::Int { .. }
+			| Key::Float { .. }
+			| Key::Bool(_)
+			| Key::Ptr(_)
+			| Key::Fn(_)
+			| Key::EnumTag { .. }
+			| Key::Aggregate { .. }
+			| Key::NullPtr
+			| Key::Void
+			| Key::Unreachable
+			| Key::Union { .. }
+			| Key::DeclRef { .. }
+			| Key::FnDecl(_)
+			| Key::EnumLiteral(_) => false,
 		}
 	}
 
@@ -1045,19 +1097,39 @@ impl ValueStore {
 		if !self.type_contains_generic_poison(ty) {
 			return ty;
 		}
-		match self.index_to_key(ty) {
-			Key::TypePtr(ptr) => {
+		let Key::Type(ty_key) = self.index_to_key(ty) else {
+			unreachable!("generic substitution expected a type")
+		};
+		match ty_key {
+			Type::Ptr(ptr) => {
 				let new_pointee = self.substitute_poisons(ptr.pointee_ty, bindings);
-				self.intern_trivial(&Key::TypePtr(TypePtr {
+				self.intern_trivial(&Key::Type(Type::Ptr(TypePtr {
 					pointee_ty: new_pointee,
 					..*ptr
-				}))
+				})))
 			},
-			Key::TypeSlice(sl) => {
+			Type::Slice(sl) => {
 				let new_elem = self.substitute_poisons(sl.pointee_ty, bindings);
-				self.intern_trivial(&Key::TypeSlice(TypeSlice { pointee_ty: new_elem }))
+				self.intern_trivial(&Key::Type(Type::Slice(TypeSlice { pointee_ty: new_elem })))
 			},
-			Key::TypeStruct(ns) => {
+			Type::Array(array) => {
+				let elem_ty = self.substitute_poisons(array.elem_ty, bindings);
+				self.intern_trivial(&Key::Type(Type::Array(TypeArray { elem_ty, ..*array })))
+			},
+			Type::Fn(function) => {
+				let params = function
+					.params
+					.iter()
+					.map(|ty| self.substitute_poisons(*ty, bindings))
+					.collect::<Vec<_>>();
+				let ret_ty = self.substitute_poisons(function.ret_ty, bindings);
+				self.intern_trivial(&Key::Type(Type::Fn(TypeFn {
+					params: self.alloc_slice(&params),
+					ret_ty,
+					..*function
+				})))
+			},
+			Type::Struct(ns) => {
 				let new_captures: Vec<Capture> = ns
 					.captures
 					.iter()
@@ -1068,15 +1140,15 @@ impl ValueStore {
 					.collect();
 				let new_captures = self.alloc_slice(&new_captures);
 				self.intern_non_trivial(
-					&Key::TypeStruct(NamespaceType {
+					&Key::Type(Type::Struct(NamespaceType {
 						inst: ns.inst,
 						captures: new_captures,
-					}),
+					})),
 					// Re-fetch the value for the original to preserve it
 					self.index_to_value(ty),
 				)
 			},
-			Key::TypeEnum(ns) => {
+			Type::Enum(ns) => {
 				let new_captures: Vec<Capture> = ns
 					.captures
 					.iter()
@@ -1087,14 +1159,14 @@ impl ValueStore {
 					.collect();
 				let new_captures = self.alloc_slice(&new_captures);
 				self.intern_non_trivial(
-					&Key::TypeEnum(NamespaceType {
+					&Key::Type(Type::Enum(NamespaceType {
 						inst: ns.inst,
 						captures: new_captures,
-					}),
+					})),
 					self.index_to_value(ty),
 				)
 			},
-			Key::TypeUnion(ns) => {
+			Type::Union(ns) => {
 				let new_captures: Vec<Capture> = ns
 					.captures
 					.iter()
@@ -1105,14 +1177,31 @@ impl ValueStore {
 					.collect();
 				let new_captures = self.alloc_slice(&new_captures);
 				self.intern_non_trivial(
-					&Key::TypeUnion(NamespaceType {
+					&Key::Type(Type::Union(NamespaceType {
 						inst: ns.inst,
 						captures: new_captures,
-					}),
+					})),
 					self.index_to_value(ty),
 				)
 			},
-			_ => ty,
+			Type::Int { .. }
+			| Type::Anyint
+			| Type::Anyfloat
+			| Type::Usize
+			| Type::Isize
+			| Type::F16
+			| Type::F32
+			| Type::F64
+			| Type::F128
+			| Type::Bool
+			| Type::Void
+			| Type::NullPtr
+			| Type::Any
+			| Type::Anyptr
+			| Type::GenericPoison
+			| Type::Type
+			| Type::Never
+			| Type::EnumLiteral => ty,
 		}
 	}
 
@@ -1175,32 +1264,7 @@ impl ValueStore {
 	) -> Index {
 		let key = self.index_to_key(i);
 		match key {
-			Key::TypeAny
-			| Key::TypeAnyptr
-			| Key::TypeAnyint
-			| Key::TypeAnyfloat
-			| Key::TypeUsize
-			| Key::TypeIsize
-			| Key::TypeF16
-			| Key::TypeF32
-			| Key::TypeF64
-			| Key::TypeF128
-			| Key::TypeInt { .. }
-			| Key::TypeType
-			| Key::TypeVoid
-			| Key::TypeBool
-			| Key::TypeFn(..)
-			| Key::TypePtr(..)
-			| Key::TypeSlice(..)
-			| Key::TypeStruct(..)
-			| Key::TypeEnum(..)
-			| Key::TypeUnion(..)
-			| Key::TypeArray(..)
-			| Key::TypeNever
-			| Key::TypeGenericPoison
-			| Key::TypeEnumLiteral
-			| Key::TypeNullPtr
-			| Key::GenericPoison { .. } => self.common.type_t,
+			Key::Type(_) | Key::GenericPoison { .. } => self.common.type_t,
 			Key::Ptr(ptr) => ptr.ty,
 			Key::Fn(fun) => fun.ty,
 			Key::Int { ty, .. } => *ty,
@@ -1227,12 +1291,15 @@ impl ValueStore {
 		ty: Index,
 	) -> bool {
 		let (key, value) = self.value_map.kv(ty);
-		match key {
+		let Key::Type(ty_key) = key else {
+			unreachable!("not a type: {}", self.display_index(ty))
+		};
+		match ty_key {
 			// comptime only
-			Key::TypeAny | Key::TypeAnyint | Key::TypeAnyfloat | Key::TypeType => true,
+			Type::Any | Type::Anyint | Type::Anyfloat | Type::Type | Type::EnumLiteral | Type::NullPtr => true,
 
 			// comptime if inner types is
-			Key::TypeStruct(r#struct) => {
+			Type::Struct(_) => {
 				let r#struct = value.load(Ordering::Relaxed).as_struct();
 				let r#struct = r#struct.as_ref();
 				for field in r#struct.fields {
@@ -1243,15 +1310,15 @@ impl ValueStore {
 
 				false
 			},
-			Key::TypePtr(ptr) => self.type_is_comptime_only(ptr.pointee_ty),
-			Key::TypeSlice(slice) => self.type_is_comptime_only(slice.pointee_ty),
-			Key::TypeArray(arr) => self.type_is_comptime_only(arr.elem_ty),
-			Key::TypeEnum(r#enum) => {
+			Type::Ptr(ptr) => self.type_is_comptime_only(ptr.pointee_ty),
+			Type::Slice(slice) => self.type_is_comptime_only(slice.pointee_ty),
+			Type::Array(arr) => self.type_is_comptime_only(arr.elem_ty),
+			Type::Enum(_) => {
 				let r#enum = value.load(Ordering::Relaxed).as_enum();
 				let r#enum = r#enum.as_ref();
 				self.type_is_comptime_only(r#enum.tag_ty)
 			},
-			Key::TypeUnion(_) => {
+			Type::Union(_) => {
 				let u = value.load(Ordering::Relaxed).as_union();
 				let u = u.as_ref();
 				for field in u.fields {
@@ -1265,23 +1332,21 @@ impl ValueStore {
 			},
 
 			// comptime and runtime
-			Key::TypeBool
-			| Key::TypeAnyptr
-			| Key::TypeInt { .. }
-			| Key::TypeFn(..)
-			| Key::TypeVoid
-			| Key::TypeNever
-			| Key::TypeUsize
-			| Key::TypeIsize
-			| Key::TypeF16
-			| Key::TypeF32
-			| Key::TypeF64
-			| Key::TypeF128 => false,
+			Type::Bool
+			| Type::Anyptr
+			| Type::Int { .. }
+			| Type::Fn(..)
+			| Type::Void
+			| Type::Never
+			| Type::Usize
+			| Type::Isize
+			| Type::F16
+			| Type::F32
+			| Type::F64
+			| Type::F128 => false,
 
 			// cannot be determined at all and the compiler should never ask for a generic poison
-			Key::TypeGenericPoison => unreachable!(),
-
-			_ => unreachable!("not a type: {}", self.display_index(ty)),
+			Type::GenericPoison => unreachable!(),
 		}
 	}
 
@@ -1290,11 +1355,35 @@ impl ValueStore {
 		ty: Index,
 	) -> bool {
 		let (key, value) = self.value_map.kv(ty);
-		match key {
-			Key::TypeStruct(_) => value.load(Ordering::Relaxed).as_struct().as_ref().linear,
-			Key::TypeEnum(_) => value.load(Ordering::Relaxed).as_enum().as_ref().linear,
-			Key::TypeUnion(_) => value.load(Ordering::Relaxed).as_union().as_ref().linear,
-			_ => false,
+		let Key::Type(ty_key) = key else {
+			unreachable!("not a type: {}", self.display_index(ty))
+		};
+		match ty_key {
+			Type::Struct(_) => value.load(Ordering::Relaxed).as_struct().as_ref().linear,
+			Type::Enum(_) => value.load(Ordering::Relaxed).as_enum().as_ref().linear,
+			Type::Union(_) => value.load(Ordering::Relaxed).as_union().as_ref().linear,
+			Type::Int { .. }
+			| Type::Anyint
+			| Type::Anyfloat
+			| Type::Usize
+			| Type::Isize
+			| Type::F16
+			| Type::F32
+			| Type::F64
+			| Type::F128
+			| Type::Bool
+			| Type::Void
+			| Type::Fn(_)
+			| Type::Ptr(_)
+			| Type::Slice(_)
+			| Type::Array(_)
+			| Type::NullPtr
+			| Type::Any
+			| Type::Anyptr
+			| Type::GenericPoison
+			| Type::Type
+			| Type::Never
+			| Type::EnumLiteral => false,
 		}
 	}
 
@@ -1302,17 +1391,44 @@ impl ValueStore {
 		&self,
 		ty: Index,
 	) -> u32 {
-		match self.index_to_key_value(ty) {
-			(Key::TypeInt { bits, .. }, _) => *bits as _,
-			(Key::TypeStruct(_), Value::Struct(r#struct)) => {
+		let (Key::Type(ty_key), value) = self.index_to_key_value(ty) else {
+			unreachable!("not a type: {}", self.display_index(ty))
+		};
+		match ty_key {
+			Type::Int { bits, .. } => *bits as _,
+			Type::Struct(_) => {
+				let Value::Struct(r#struct) = value else {
+					unreachable!("struct type without struct value")
+				};
 				if let StructLayout::Packed { storage_bits, .. } = r#struct.as_ref().layout {
 					storage_bits
 				} else {
 					unreachable!()
 				}
 			},
-			(Key::TypeBool, _) => 1,
-			(key, _) => unreachable!("{key:?}"),
+			Type::Bool => 1,
+			Type::Anyint
+			| Type::Anyfloat
+			| Type::Usize
+			| Type::Isize
+			| Type::F16
+			| Type::F32
+			| Type::F64
+			| Type::F128
+			| Type::Void
+			| Type::Enum(_)
+			| Type::Union(_)
+			| Type::Fn(_)
+			| Type::Ptr(_)
+			| Type::Slice(_)
+			| Type::Array(_)
+			| Type::NullPtr
+			| Type::Any
+			| Type::Anyptr
+			| Type::GenericPoison
+			| Type::Type
+			| Type::Never
+			| Type::EnumLiteral => unreachable!("{ty_key:?} has no direct bit size"),
 		}
 	}
 
@@ -1322,9 +1438,12 @@ impl ValueStore {
 		ty: Index,
 	) -> Layout {
 		// TODO(zino): proper ABI management of size ofs with target
-		match self.index_to_key_value(ty) {
-			(Key::TypeBool, _) => Layout { size: 1, align: 1 },
-			(Key::TypeInt { bits, .. }, _) => {
+		let (Key::Type(ty_key), value) = self.index_to_key_value(ty) else {
+			unreachable!("not a type: {}", self.display_index(ty))
+		};
+		match ty_key {
+			Type::Bool => Layout { size: 1, align: 1 },
+			Type::Int { bits, .. } => {
 				// TODO(zino): revisit
 				let size = u64::from(*bits).div_ceil(8);
 				Layout {
@@ -1332,19 +1451,19 @@ impl ValueStore {
 					align: size.next_power_of_two(),
 				}
 			},
-			(Key::TypeF16, _) => Layout { size: 2, align: 2 },
-			(Key::TypeF32, _) => Layout { size: 4, align: 4 },
-			(Key::TypeF64, _) => Layout { size: 8, align: 8 },
-			(Key::TypeF128, _) => Layout { size: 16, align: 16 },
-			(Key::TypePtr(_) | Key::TypeUsize | Key::TypeIsize, _) => self.type_ptr_layout(target, ty),
-			(Key::TypeArray(array), _) => {
+			Type::F16 => Layout { size: 2, align: 2 },
+			Type::F32 => Layout { size: 4, align: 4 },
+			Type::F64 => Layout { size: 8, align: 8 },
+			Type::F128 => Layout { size: 16, align: 16 },
+			Type::Ptr(_) | Type::Usize | Type::Isize => self.type_ptr_layout(target, ty),
+			Type::Array(array) => {
 				let elem = self.type_layout(target, array.elem_ty);
 				Layout {
 					size: elem.size.next_multiple_of(elem.align) * array.len,
 					align: elem.align,
 				}
 			},
-			(Key::TypeSlice(_), _) => {
+			Type::Slice(_) => {
 				// TODO(zino): slice as ptr
 				let ptr_size = target.ptr_width_in_bits.div_exact(8).unwrap() as u64;
 				Layout {
@@ -1353,7 +1472,7 @@ impl ValueStore {
 					align: ptr_size,
 				}
 			},
-			(Key::TypeAnyptr, _) => {
+			Type::Anyptr => {
 				let ptr_size = target.ptr_width_in_bits.div_exact(8).unwrap() as u64;
 				// pointer + compiler-internal type id (usize) TODO(zino)
 				Layout {
@@ -1361,33 +1480,56 @@ impl ValueStore {
 					align: ptr_size,
 				}
 			},
-			(Key::TypeStruct(..), Value::Struct(r#struct)) => match &r#struct.layout {
-				StructLayout::Standard => {
-					let mut size = 0u64;
-					let mut align = 1u64;
-					for field in r#struct.fields {
-						let field = self.type_layout(target, field.ty);
-						size = size.next_multiple_of(field.align);
-						size += field.size;
-						align = align.max(field.align);
-					}
-					Layout {
-						size: size.next_multiple_of(align),
-						align,
-					}
-				},
-				StructLayout::Packed { storage_bits, .. } => Layout {
-					size: u64::from(*storage_bits).div_ceil(8),
-					align: 1,
-				},
+			Type::Struct(..) => {
+				let Value::Struct(r#struct) = value else {
+					unreachable!("struct type without struct value")
+				};
+				match &r#struct.layout {
+					StructLayout::Standard => {
+						let mut size = 0u64;
+						let mut align = 1u64;
+						for field in r#struct.fields {
+							let field = self.type_layout(target, field.ty);
+							size = size.next_multiple_of(field.align);
+							size += field.size;
+							align = align.max(field.align);
+						}
+						Layout {
+							size: size.next_multiple_of(align),
+							align,
+						}
+					},
+					StructLayout::Packed { storage_bits, .. } => Layout {
+						size: u64::from(*storage_bits).div_ceil(8),
+						align: 1,
+					},
+				}
 			},
-			(Key::TypeEnum(..), Value::Enum(r#enum)) => self.type_layout(target, r#enum.tag_ty),
-			(Key::TypeUnion(..), Value::Union(_)) => {
+			Type::Enum(..) => {
+				let Value::Enum(r#enum) = value else {
+					unreachable!("enum type without enum value")
+				};
+				self.type_layout(target, r#enum.tag_ty)
+			},
+			Type::Union(..) => {
+				let Value::Union(_) = value else {
+					unreachable!("union type without union value")
+				};
 				// TODO(zino): this can become a bottleneck, we could cache it in the union
 				self.type_union_layout(target, ty).union_layout
 			},
-			(Key::TypeVoid, _) => Layout { size: 0, align: 0 },
-			(key, _) => unreachable!("{key:?}"),
+			Type::Void => Layout { size: 0, align: 0 },
+			Type::Anyint
+			| Type::Anyfloat
+			| Type::Fn(_)
+			| Type::NullPtr
+			| Type::Any
+			| Type::GenericPoison
+			| Type::Type
+			| Type::Never
+			| Type::EnumLiteral => {
+				unreachable!("{ty_key:?} has no runtime layout")
+			},
 		}
 	}
 
@@ -1459,11 +1601,35 @@ impl ValueStore {
 		&self,
 		ty: Index,
 	) -> bool {
-		match self.index_to_key(ty) {
-			Key::TypeInt { signed, .. } => *signed,
-			Key::TypeUsize => false,
-			Key::TypeIsize => true,
-			_ => unreachable!(),
+		let Key::Type(ty_key) = self.index_to_key(ty) else {
+			unreachable!("not a type: {}", self.display_index(ty))
+		};
+		match ty_key {
+			Type::Int { signed, .. } => *signed,
+			Type::Usize => false,
+			Type::Isize => true,
+			Type::Anyint
+			| Type::Anyfloat
+			| Type::F16
+			| Type::F32
+			| Type::F64
+			| Type::F128
+			| Type::Bool
+			| Type::Void
+			| Type::Struct(_)
+			| Type::Enum(_)
+			| Type::Union(_)
+			| Type::Fn(_)
+			| Type::Ptr(_)
+			| Type::Slice(_)
+			| Type::Array(_)
+			| Type::NullPtr
+			| Type::Any
+			| Type::Anyptr
+			| Type::GenericPoison
+			| Type::Type
+			| Type::Never
+			| Type::EnumLiteral => unreachable!("{ty_key:?} is not an integer type"),
 		}
 	}
 }
@@ -1501,59 +1667,4 @@ pub struct CommonValues {
 	pub void_value: Index,
 	pub true_value: Index,
 	pub false_value: Index,
-}
-
-#[repr(transparent)]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct Type(pub Index);
-impl Type {
-	#[inline(always)]
-	pub fn from_index(i: Index) -> Self {
-		Type(i)
-	}
-
-	#[inline(always)]
-	pub fn index(self) -> Index {
-		self.0
-	}
-}
-
-impl From<Index> for Type {
-	#[inline(always)]
-	fn from(i: Index) -> Self {
-		Type(i)
-	}
-}
-
-impl From<Type> for Index {
-	#[inline(always)]
-	fn from(ty: Type) -> Self {
-		ty.0
-	}
-}
-
-impl Deref for Type {
-	type Target = Index;
-
-	fn deref(&self) -> &Index {
-		&self.0
-	}
-}
-
-impl PartialEq<Index> for Type {
-	fn eq(
-		&self,
-		other: &Index,
-	) -> bool {
-		self.0 == *other
-	}
-}
-
-impl PartialEq<Type> for Index {
-	fn eq(
-		&self,
-		other: &Type,
-	) -> bool {
-		*self == other.0
-	}
 }

@@ -8,27 +8,39 @@ pub fn compute_type_abi_win64(
 	cu: &CompilationUnit,
 	ty: value::Index,
 ) -> Repr {
-	match cu.values.index_to_key(ty) {
-		value::Key::TypePtr(..)
-		| value::Key::TypeInt { .. }
-		| value::Key::TypeBool
-		| value::Key::TypeEnum(..)
-		| value::Key::TypeUsize
-		| value::Key::TypeIsize
-		| value::Key::TypeF16
-		| value::Key::TypeF32
-		| value::Key::TypeF64
-		| value::Key::TypeVoid => Repr::ByValue,
+	let value::Key::Type(ty_key) = cu.values.index_to_key(ty) else {
+		unreachable!("cannot lower ABI of non-type {}", cu.values.display_index(ty))
+	};
+	match ty_key {
+		value::Type::Ptr(..)
+		| value::Type::Int { .. }
+		| value::Type::Bool
+		| value::Type::Enum(..)
+		| value::Type::Usize
+		| value::Type::Isize
+		| value::Type::F16
+		| value::Type::F32
+		| value::Type::F64
+		| value::Type::Void => Repr::ByValue,
 
-		value::Key::TypeArray(..) | value::Key::TypeSlice(..) | value::Key::TypeStruct(..) | value::Key::TypeUnion(..) => {
+		value::Type::Array(..) | value::Type::Slice(..) | value::Type::Struct(..) | value::Type::Union(..) => {
 			let layout = cu.values.type_layout(&cu.resolved_target, ty);
 			match layout.size {
 				1 | 2 | 4 | 8 => Repr::AsInteger,
 				_ => Repr::ByRef,
 			}
 		},
-		value::Key::TypeF128 => Repr::ByRef,
+		value::Type::F128 => Repr::ByRef,
 
-		_ => unreachable!("cannot lower abi of {}", cu.values.display_index(ty)),
+		value::Type::Anyint
+		| value::Type::Anyfloat
+		| value::Type::Fn(_)
+		| value::Type::NullPtr
+		| value::Type::Any
+		| value::Type::Anyptr
+		| value::Type::GenericPoison
+		| value::Type::Type
+		| value::Type::Never
+		| value::Type::EnumLiteral => unreachable!("cannot lower ABI of {}", cu.values.display_index(ty)),
 	}
 }

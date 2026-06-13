@@ -120,15 +120,15 @@ impl<'a> Sema<'a> {
 		let con = self.cu.values.index_to_key(arg_ty);
 
 		match (pat, con) {
-			(value::Key::TypePtr(p_ptr), value::Key::TypePtr(c_ptr)) if p_ptr.is_const == c_ptr.is_const => {
+			(value::Key::Type(value::Type::Ptr(p_ptr)), value::Key::Type(value::Type::Ptr(c_ptr))) if p_ptr.is_const == c_ptr.is_const => {
 				self.try_unify_extract(p_ptr.pointee_ty, c_ptr.pointee_ty, substitution_map)
 			},
-			(value::Key::TypeSlice(p_sl), value::Key::TypeSlice(c_sl)) => {
+			(value::Key::Type(value::Type::Slice(p_sl)), value::Key::Type(value::Type::Slice(c_sl))) => {
 				self.try_unify_extract(p_sl.pointee_ty, c_sl.pointee_ty, substitution_map)
 			},
-			(value::Key::TypeStruct(p_ns), value::Key::TypeStruct(c_ns))
-			| (value::Key::TypeEnum(p_ns), value::Key::TypeEnum(c_ns))
-			| (value::Key::TypeUnion(p_ns), value::Key::TypeUnion(c_ns))
+			(value::Key::Type(value::Type::Struct(p_ns)), value::Key::Type(value::Type::Struct(c_ns)))
+			| (value::Key::Type(value::Type::Enum(p_ns)), value::Key::Type(value::Type::Enum(c_ns)))
+			| (value::Key::Type(value::Type::Union(p_ns)), value::Key::Type(value::Type::Union(c_ns)))
 				if p_ns.inst == c_ns.inst && p_ns.captures.len() == c_ns.captures.len() =>
 			{
 				for (p_cap, c_cap) in p_ns.captures.iter().zip(c_ns.captures.iter()) {
@@ -202,7 +202,7 @@ impl<'a> Sema<'a> {
 			self.cu.values.index_to_key(func_decl.ty).as_type_fn()
 		} else {
 			let fn_ty_idx = self.type_of(&fun);
-			let value::Key::TypeFn(_) = self.cu.values.index_to_key(fn_ty_idx) else {
+			let value::Key::Type(value::Type::Fn(_)) = self.cu.values.index_to_key(fn_ty_idx) else {
 				self.push_error(
 					Diagnostic::error()
 						.with_message("callee is not a function")
@@ -826,7 +826,7 @@ impl<'a> Sema<'a> {
 		if let Some(env) = effect_handler_env {
 			resolved_args_types.insert(0, self.type_of(&env));
 		}
-		let instantiated_fn_ty = self.cu.values.intern_trivial(&value::Key::TypeFn(value::TypeFn {
+		let instantiated_fn_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Fn(value::TypeFn {
 			params: self.cu.values.alloc_slice(&resolved_args_types),
 			comptime_params: func_type.comptime_params,
 			first_positional_param: func_type.first_positional_param,
@@ -835,7 +835,7 @@ impl<'a> Sema<'a> {
 			external: func_type.external,
 			callconv: func_type.callconv,
 			inline: func_type.inline,
-		}));
+		})));
 
 		// at this point we know everything about the function, only one thing remains:
 		// force comptime if the return type is comptime-only (e.g. a function returning `type`).

@@ -228,7 +228,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		ptr: PointerValue<'ctx>,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
 		let val = if self.lowerer.vif_abi_type_is_by_ref(pointee_ty) {
-			let pointee_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+			let pointee_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(pointee_ty);
 			let alloca = self.build_alloca_at_top_of_bb(pointee_ty_llvm, "load.byref")?;
 			let pointee_ty_layout = self
 				.compilation_unit
@@ -246,7 +246,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			);
 			alloca.as_any_value_enum()
 		} else {
-			let llvm_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+			let llvm_ty: BasicTypeEnum = self.lowerer.lower_type_basic(pointee_ty);
 
 			#[expect(clippy::disallowed_methods)]
 			self.builder().build_load(llvm_ty, ptr, "")?.as_any_value_enum()
@@ -266,7 +266,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				.compilation_unit
 				.values
 				.type_layout(&self.compilation_unit.resolved_target, elem_ty);
-			let elem_ty: BasicTypeEnum = self.lowerer.lower_type(elem_ty).try_into().unwrap();
+			let elem_ty: BasicTypeEnum = self.lowerer.lower_type_basic(elem_ty);
 			self.builder().build_memcpy(
 				elem_ptr,
 				elem_ty_layout.align as u32,
@@ -297,7 +297,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		name: &str,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
 		if self.lowerer.vif_abi_type_is_by_ref(ty) {
-			let ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
+			let ty: BasicTypeEnum = self.lowerer.lower_type_basic(ty);
 			let storage = self.build_alloca_at_top_of_bb(ty, "materialize")?;
 			#[allow(clippy::disallowed_methods)]
 			self.builder().build_store(storage, value)?;
@@ -307,6 +307,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		}
 	}
 
+	#[allow(
+		clippy::disallowed_methods,
+		reason = "ABI adaptation requires loads and stores with explicit LLVM types"
+	)]
 	fn lower_body_inst(
 		&mut self,
 		vtir: &Vtir,
@@ -344,7 +348,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let ret_ty = if self.lowerer.vif_abi_type_is_by_ref(*ret_ty) {
 						self.lowerer.ctx.ptr_type(AddressSpace::default()).as_basic_type_enum()
 					} else {
-						self.lowerer.lower_type(*ret_ty).try_into().unwrap()
+						self.lowerer.lower_type_basic(*ret_ty)
 					};
 					let break_list = self.vtir_block_to_break_list.get(&id).unwrap();
 					if !break_list.breaks.is_empty() {
@@ -377,7 +381,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::StackAlloc { ty: ptr_ty } => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*ptr_ty).as_type_ptr().pointee_ty;
-				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type_basic(pointee_ty);
 				let alloca = self.build_alloca_at_top_of_bb(pointee_ty, "stackalloc")?;
 				self.vtir_inst_to_llvm_value.insert(id, alloca.into());
 			},
@@ -487,7 +491,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						let value = match ret_repr {
 							abi::Repr::ByValue => {
 								if self.lowerer.vif_abi_type_is_by_ref(value_ty) {
-									let value_ty: BasicTypeEnum = self.lowerer.lower_type(value_ty).try_into().unwrap();
+									let value_ty: BasicTypeEnum = self.lowerer.lower_type_basic(value_ty);
 									self.builder()
 										.build_load(value_ty, value.into_pointer_value(), "ret.byref.to.byval.load")?
 								} else {
@@ -503,7 +507,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 								if self.lowerer.vif_abi_type_is_by_ref(value_ty) {
 									self.builder().build_load(int_ty, value.into_pointer_value(), "ret.asinteger")?
 								} else {
-									let value_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(value_ty).try_into().unwrap();
+									let value_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(value_ty);
 									let storage = self.build_alloca_at_top_of_bb(value_ty_llvm, "ret.asinteger.storage")?;
 									self.builder().build_store(storage, value)?;
 									self.builder().build_load(int_ty, storage, "ret.asinteger")?
@@ -530,7 +534,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let mut values = Vec::<BasicMetadataValueEnum>::with_capacity(args.len());
 
 					let ret_ptr = if sret {
-						let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
+						let ret_ty: BasicTypeEnum = self.lowerer.lower_type_basic(fn_ty.ret_ty);
 						let ret_ptr = self.build_alloca_at_top_of_bb(ret_ty, "call.sret")?;
 						values.push(ret_ptr.into());
 						Some(ret_ptr)
@@ -541,7 +545,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let abi_param_offset = usize::from(sret);
 					for (i, arg) in args.iter().enumerate() {
 						let arg_ty = vtir.type_of(&self.compilation_unit.values, arg);
-						let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+						let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(arg_ty);
 						let arg: BasicValueEnum = self.resolve_inst(*arg).try_into().unwrap();
 						// convert from vif abi to fn abi
 						let val = match self.lowerer.compute_fn_param_abi_repr(fn_ty, arg_ty) {
@@ -576,7 +580,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 								}
 							},
 						};
-						values.push(val.try_into().unwrap());
+						values.push(val.into());
 					}
 					(values, ret_ptr)
 				};
@@ -600,7 +604,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.build_load(fn_ty.ret_ty, ret_ptr)?
 					}
 				} else if ret_repr == abi::Repr::AsInteger {
-					let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
+					let ret_ty: BasicTypeEnum = self.lowerer.lower_type_basic(fn_ty.ret_ty);
 					let abi_value = val.try_as_basic_value().unwrap_basic();
 					let storage = self.build_alloca_at_top_of_bb(ret_ty, "call.ret.asinteger")?;
 					self.builder().build_store(storage, abi_value)?;
@@ -614,7 +618,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				} else {
 					// vif abi may expect a ref, wrap in a alloc
 					if self.lowerer.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
-						let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
+						let ret_ty: BasicTypeEnum = self.lowerer.lower_type_basic(fn_ty.ret_ty);
 						let alloca = self.build_alloca_at_top_of_bb(ret_ty, "")?;
 						let val: BasicValueEnum = val.try_as_basic_value().unwrap_basic();
 						self.builder().build_store(alloca, val)?;
@@ -992,7 +996,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			vtir::Opcode::StructInit { struct_ty, fields } => {
 				let is_packed_struct = matches!(
 					self.compilation_unit.values.index_to_key_value(*struct_ty),
-					(value::Key::TypeStruct(_), value::Value::Struct(s)) if s.as_ref().is_packed()
+					(value::Key::Type(value::Type::Struct(_)), value::Value::Struct(s)) if s.as_ref().is_packed()
 				);
 				if is_packed_struct {
 					let r#struct = self.compilation_unit.values.index_to_value(*struct_ty).as_struct();
@@ -1050,7 +1054,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::SliceInit { slice_ty, elements } => {
 				let slice = self.compilation_unit.values.index_to_key(*slice_ty).as_type_slice();
-				let elem_ty: BasicTypeEnum = self.lowerer.lower_type(slice.pointee_ty).try_into().unwrap();
+				let elem_ty: BasicTypeEnum = self.lowerer.lower_type_basic(slice.pointee_ty);
 				let slice_ty_llvm = self.lowerer.lower_type(*slice_ty).into_struct_type();
 				let len_ty = self
 					.lowerer
@@ -1065,6 +1069,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let array_alloca = self.build_alloca_at_top_of_bb(array_ty, "slice.literal")?;
 					for (i, element) in elements.iter().enumerate() {
 						let index = self.lowerer.ctx.i32_type().const_int(i as u64, false);
+						// SAFETY: `array_alloca` has `array_ty`, and `i` is bounded by the
+						// number of elements used to construct that array type.
 						let elem_ptr = unsafe {
 							self.builder().build_in_bounds_gep(
 								array_ty,
@@ -1077,6 +1083,8 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.build_store(slice.pointee_ty, elem_ptr, element)?;
 					}
 
+					// SAFETY: this branch is only reached for a non-empty array, so its
+					// first element exists and has the slice's element type.
 					unsafe {
 						self.builder().build_in_bounds_gep(
 							array_ty,
@@ -1094,7 +1102,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::AnyptrInit { value, value_ty } => {
 				let resolved = self.resolve_inst(*value);
-				let payload_ty: BasicTypeEnum = self.lowerer.lower_type(*value_ty).try_into().unwrap();
+				let payload_ty: BasicTypeEnum = self.lowerer.lower_type_basic(*value_ty);
 				let payload_alloca = self.build_alloca_at_top_of_bb(payload_ty, "any.payload")?;
 				self.build_store(*value_ty, payload_alloca, resolved)?;
 
@@ -1118,12 +1126,38 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				ret_ty,
 			} => {
 				let ty = vtir.type_of(&self.compilation_unit.values, struct_ty);
-				let is_packed = match self.compilation_unit.values.index_to_key(ty) {
-					value::Key::TypeStruct(_) => {
+				let value::Key::Type(ty_key) = self.compilation_unit.values.index_to_key(ty) else {
+					unreachable!("struct field operand has a non-type type")
+				};
+				let is_packed = match ty_key {
+					value::Type::Struct(_) => {
 						let s = self.compilation_unit.values.index_to_value(ty).as_struct();
 						matches!(s.as_ref().layout, value::StructLayout::Packed { .. })
 					},
-					_ => false,
+					value::Type::Int { .. }
+					| value::Type::Anyint
+					| value::Type::Anyfloat
+					| value::Type::Usize
+					| value::Type::Isize
+					| value::Type::F16
+					| value::Type::F32
+					| value::Type::F64
+					| value::Type::F128
+					| value::Type::Bool
+					| value::Type::Void
+					| value::Type::Enum(_)
+					| value::Type::Union(_)
+					| value::Type::Fn(_)
+					| value::Type::Ptr(_)
+					| value::Type::Slice(_)
+					| value::Type::Array(_)
+					| value::Type::NullPtr
+					| value::Type::Any
+					| value::Type::Anyptr
+					| value::Type::GenericPoison
+					| value::Type::Type
+					| value::Type::Never
+					| value::Type::EnumLiteral => false,
 				};
 
 				if is_packed {
@@ -1146,7 +1180,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						};
 
 						let field = {
-							let _ty: BasicTypeEnum = self.lowerer.lower_type(*ret_ty).try_into().unwrap();
+							let _ty: BasicTypeEnum = self.lowerer.lower_type_basic(*ret_ty);
 							let field_ty_int = ctx.custom_width_int_type(self.compilation_unit.values.type_bit_size(*ret_ty));
 							self.builder().build_int_truncate(field, field_ty_int, "")?
 						};
@@ -1176,7 +1210,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let r#struct = self.compilation_unit.values.index_to_value(struct_ty).as_struct();
 				let r#struct = r#struct.as_ref();
 
-				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(struct_ty).try_into().unwrap();
+				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type_basic(struct_ty);
 				let ptr = self.resolve_inst(*struct_ptr).into_pointer_value();
 
 				// if the struct is packed, returns directly the ptr to the struct
@@ -1317,13 +1351,13 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::Zeroed { ty } => {
 				let ty_idx = *ty;
-				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type(ty_idx).try_into().unwrap();
+				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type_basic(ty_idx);
 				let zeroed = self.materialize_nominal_value(ty_idx, ty.const_zero(), "zeroed")?;
 				self.vtir_inst_to_llvm_value.insert(id, zeroed);
 			},
 			vtir::Opcode::BitCast { src, dst_ty } => {
 				let src: BasicValueEnum = self.resolve_inst(*src).try_into().unwrap();
-				let dst_ty: BasicTypeEnum = self.lowerer.lower_type(*dst_ty).try_into().unwrap();
+				let dst_ty: BasicTypeEnum = self.lowerer.lower_type_basic(*dst_ty);
 				let val = self.builder().build_bit_cast(src, dst_ty, "")?;
 				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
@@ -1344,7 +1378,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::Undefined { ty } => {
 				let ty_idx = *ty;
-				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type(ty_idx).try_into().unwrap();
+				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type_basic(ty_idx);
 
 				let undef_value = match ty {
 					BasicTypeEnum::IntType(int_ty) => int_ty.get_undef().as_any_value_enum(),
@@ -1406,7 +1440,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			},
 			vtir::Opcode::SliceElemPtr { slice, index, elem_ptr_ty } => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*elem_ptr_ty).as_type_ptr().pointee_ty;
-				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type_basic(pointee_ty);
 
 				let src = self.resolve_inst(*slice).into_struct_value();
 				let src_ptr = self
@@ -1429,7 +1463,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				elem_ptr_ty,
 			} => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*elem_ptr_ty).as_type_ptr().pointee_ty;
-				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
+				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type_basic(pointee_ty);
 				let array_ptr = self.resolve_inst(*array_ptr).into_pointer_value();
 				let index = self.resolve_inst(*index).into_int_value();
 				// SAFETY: The pointer operand is typed as pointing at `pointee_ty`, and
@@ -1581,7 +1615,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			let ret_ty = if self.lowerer.vif_abi_type_is_by_ref(ret_ty) {
 				self.lowerer.ctx.ptr_type(AddressSpace::default()).as_basic_type_enum()
 			} else {
-				self.lowerer.lower_type(ret_ty).try_into().unwrap()
+				self.lowerer.lower_type_basic(ret_ty)
 			};
 			let break_list = self.vtir_block_to_break_list.get(&id).unwrap();
 			if !break_list.breaks.is_empty() {
@@ -1599,6 +1633,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		Ok(phi)
 	}
 
+	#[allow(
+		clippy::disallowed_methods,
+		reason = "ABI adaptation requires loads and stores with explicit LLVM types"
+	)]
 	fn lower_fn_body(
 		&mut self,
 		interned_fn_value: value::Index,
@@ -1609,16 +1647,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		let fn_ty = self.compilation_unit.values.index_to_key(fn_value.ty).as_type_fn();
 
 		if fn_ty.external {
-			let fn_value = self
-				.resolve_inst(InstructionRef::Interned(interned_fn_value))
-				.into_function_value();
+			let fn_value = self.resolve_inst(InstructionRef::Interned(interned_fn_value)).into_function_value();
 			fn_value.set_linkage(Linkage::External);
 			return Ok(());
 		}
 
-		let fn_value = self
-			.resolve_inst(InstructionRef::Interned(interned_fn_value))
-			.into_function_value();
+		let fn_value = self.resolve_inst(InstructionRef::Interned(interned_fn_value)).into_function_value();
 		let block = self.lowerer.ctx.append_basic_block(fn_value, "entry");
 		self.builder().position_at_end(block);
 
@@ -1688,12 +1722,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
 						arg
 					} else {
-						let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+						let pointee_ty: BasicTypeEnum = self.lowerer.lower_type_basic(arg_ty);
 						self.builder().build_load(pointee_ty, arg.into_pointer_value(), "")?
 					}
 				},
 				abi::Repr::AsInteger => {
-					let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+					let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(arg_ty);
 					let alloca = self.build_alloca_at_top_of_bb(arg_abi_ty, "fn.arg.asinteger")?;
 					self.builder().build_store(alloca, arg)?;
 
@@ -1775,22 +1809,52 @@ impl<'ctx> Lowerer<'ctx> {
 		&self,
 		ty: value::Index,
 	) -> bool {
-		match self.compilation_unit.values.index_to_key_value(ty) {
+		let (value::Key::Type(ty_key), value) = self.compilation_unit.values.index_to_key_value(ty) else {
+			unreachable!("ABI classification expected a type")
+		};
+		match ty_key {
 			// LLVM performance recommendation: do not create values of aggregate type https://llvm.org/docs/Frontend/PerformanceTips.html#avoid-creating-values-of-aggregate-type
 			// so we *almost* don't do that
-			(value::Key::TypeUnion(_), value::Value::Union(_)) => {
+			value::Type::Union(_) => {
+				let value::Value::Union(_) = value else {
+					unreachable!("union type without union value")
+				};
 				self.compilation_unit
 					.values
 					.type_union_layout(&self.compilation_unit.resolved_target, ty)
 					.payload
 					.size != 0
 			},
-			(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
+			value::Type::Struct(_) => {
+				let value::Value::Struct(r#struct) = value else {
+					unreachable!("struct type without struct value")
+				};
 				let r#struct = r#struct.as_ref();
 				!r#struct.is_packed()
 			},
-			(value::Key::TypeArray(array), _) => true,
-			_ => false,
+			value::Type::Array(_) => true,
+			value::Type::Int { .. }
+			| value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::Usize
+			| value::Type::Isize
+			| value::Type::F16
+			| value::Type::F32
+			| value::Type::F64
+			| value::Type::F128
+			| value::Type::Bool
+			| value::Type::Void
+			| value::Type::Enum(_)
+			| value::Type::Fn(_)
+			| value::Type::Ptr(_)
+			| value::Type::Slice(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::Anyptr
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => false,
 		}
 	}
 
@@ -2000,8 +2064,14 @@ impl<'ctx> Lowerer<'ctx> {
 					.iter()
 					.map(|value| self.lower_interned_value_as_llvm_value(*value).try_into().unwrap())
 					.collect::<Vec<BasicValueEnum>>();
-				match self.compilation_unit.values.index_to_key_value(*ty) {
-					(value::Key::TypeStruct(_), value::Value::Struct(r#struct)) => {
+				let (value::Key::Type(ty_key), value) = self.compilation_unit.values.index_to_key_value(*ty) else {
+					unreachable!("aggregate value has a non-type type")
+				};
+				match ty_key {
+					value::Type::Struct(_) => {
+						let value::Value::Struct(r#struct) = value else {
+							unreachable!("struct type without struct value")
+						};
 						if r#struct.as_ref().is_packed() {
 							todo!()
 						}
@@ -2015,12 +2085,12 @@ impl<'ctx> Lowerer<'ctx> {
 						};
 						value.as_any_value_enum()
 					},
-					(value::Key::TypeArray(array), _) => {
+					value::Type::Array(array) => {
 						if self.vif_abi_type_is_by_ref(array.elem_ty) {
 							let fields = values.iter().map(BasicValueEnum::get_type).collect::<Vec<_>>();
 							self.ctx.struct_type(&fields, false).const_named_struct(&values).as_any_value_enum()
 						} else {
-							let elem_ty: BasicTypeEnum = self.lower_type(array.elem_ty).try_into().unwrap();
+							let elem_ty: BasicTypeEnum = self.lower_type_basic(array.elem_ty);
 							let mut values = values.iter().map(|value| value.as_value_ref()).collect::<Vec<_>>();
 							// SAFETY: every element was coerced to the array element type during sema.
 							unsafe {
@@ -2033,7 +2103,29 @@ impl<'ctx> Lowerer<'ctx> {
 							}
 						}
 					},
-					_ => unreachable!("aggregate value has a non-aggregate type"),
+					value::Type::Int { .. }
+					| value::Type::Anyint
+					| value::Type::Anyfloat
+					| value::Type::Usize
+					| value::Type::Isize
+					| value::Type::F16
+					| value::Type::F32
+					| value::Type::F64
+					| value::Type::F128
+					| value::Type::Bool
+					| value::Type::Void
+					| value::Type::Enum(_)
+					| value::Type::Union(_)
+					| value::Type::Fn(_)
+					| value::Type::Ptr(_)
+					| value::Type::Slice(_)
+					| value::Type::NullPtr
+					| value::Type::Any
+					| value::Type::Anyptr
+					| value::Type::GenericPoison
+					| value::Type::Type
+					| value::Type::Never
+					| value::Type::EnumLiteral => unreachable!("aggregate value has a non-aggregate type"),
 				}
 			},
 			value::Key::Union { ty, tag, payload } => {
@@ -2080,8 +2172,140 @@ impl<'ctx> Lowerer<'ctx> {
 					},
 				}
 			},
-			_ => unreachable!("{:?} is not a value and therefore cannot be lowered into a LLVM value", key),
+			value::Key::Undefined { .. }
+			| value::Key::Void
+			| value::Key::Unreachable
+			| value::Key::Type(_)
+			| value::Key::GenericPoison { .. }
+			| value::Key::DeclRef { .. }
+			| value::Key::FnDecl(_)
+			| value::Key::EnumLiteral(_) => {
+				unreachable!("{:?} is not a value and therefore cannot be lowered into a LLVM value", key)
+			},
 		}
+	}
+
+	fn lower_type_basic(
+		&mut self,
+		index: value::Index,
+	) -> inkwell::types::BasicTypeEnum<'ctx> {
+		if let Some(ty) = self.interned_value_to_llvm_type.get(&index) {
+			return (*ty).try_into().unwrap();
+		}
+
+		let (key, value) = self.compilation_unit.values.index_to_key_value(index);
+		let ty_key = match key {
+			value::Key::Type(ty) => ty,
+			value::Key::Int { ty, .. } => return self.lower_type_basic(*ty),
+			value::Key::Undefined { .. }
+			| value::Key::Str { .. }
+			| value::Key::Float { .. }
+			| value::Key::Bool(_)
+			| value::Key::Ptr(_)
+			| value::Key::Fn(_)
+			| value::Key::EnumTag { .. }
+			| value::Key::Aggregate { .. }
+			| value::Key::NullPtr
+			| value::Key::Void
+			| value::Key::Unreachable
+			| value::Key::Union { .. }
+			| value::Key::GenericPoison { .. }
+			| value::Key::DeclRef { .. }
+			| value::Key::FnDecl(_)
+			| value::Key::EnumLiteral(_) => unreachable!("{key:?} is not a type"),
+		};
+		let ty = match ty_key {
+			value::Type::Int { bits, .. } => self.ctx.custom_width_int_type(*bits as u32).into(),
+			value::Type::Usize | value::Type::Isize => self
+				.ctx
+				.ptr_sized_int_type(&self.target_machine.get_target_data(), None)
+				.as_basic_type_enum(),
+			value::Type::F16 => self.ctx.f16_type().as_basic_type_enum(),
+			value::Type::F32 => self.ctx.f32_type().as_basic_type_enum(),
+			value::Type::F64 => self.ctx.f64_type().as_basic_type_enum(),
+			value::Type::F128 => self.ctx.f128_type().as_basic_type_enum(),
+			value::Type::Bool => self.ctx.bool_type().as_basic_type_enum(),
+			value::Type::Ptr(_) => self.ctx.ptr_type(inkwell::AddressSpace::default()).as_basic_type_enum(),
+			value::Type::Slice(_) => {
+				let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
+				let len_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
+				self.ctx
+					.struct_type(&[ptr_type.into(), len_type.into()], false)
+					.as_basic_type_enum()
+			},
+			value::Type::Anyptr => {
+				let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
+				let type_id_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
+				self.ctx
+					.struct_type(&[ptr_type.into(), type_id_type.into()], false)
+					.as_basic_type_enum()
+			},
+			value::Type::Array(array) => {
+				let elem_ty = self.lower_type_basic(array.elem_ty);
+				elem_ty.array_type(array.len.try_into().unwrap()).as_basic_type_enum()
+			},
+			value::Type::Struct(_) => {
+				let value::Value::Struct(struct_ty) = value else {
+					unreachable!("struct type without struct value")
+				};
+				let struct_ty = struct_ty.as_ref();
+				if let &value::StructLayout::Packed { storage_bits, .. } = &struct_ty.layout {
+					self.ctx.custom_width_int_type(storage_bits).as_basic_type_enum()
+				} else {
+					let nominal_ty = self.ctx.opaque_struct_type(&struct_ty.name);
+					self.interned_value_to_llvm_type.insert(index, nominal_ty.as_any_type_enum());
+					let field_types = struct_ty
+						.fields
+						.iter()
+						.map(|field| self.lower_type_basic(field.ty))
+						.collect::<Vec<_>>();
+					nominal_ty.set_body(&field_types, false);
+					nominal_ty.as_basic_type_enum()
+				}
+			},
+			value::Type::Enum(_) => {
+				let value::Value::Enum(r#enum) = value else {
+					unreachable!("enum type without enum value")
+				};
+				self.lower_type_basic(r#enum.tag_ty)
+			},
+			value::Type::Union(_) => {
+				let value::Value::Union(union_ty) = value else {
+					unreachable!("union type without union value")
+				};
+				let union_ty = union_ty.as_ref();
+				let canonical_field = self
+					.compilation_unit
+					.values
+					.type_union_layout(&self.compilation_unit.resolved_target, index)
+					.most_aligned_field
+					.0 as u32;
+				match self.lower_union_repr_for_field(index, canonical_field) {
+					UnionRepr::TagOnly(tag) => tag.get_type(),
+					UnionRepr::Aggregate { ty: view_ty, .. } => {
+						let nominal_ty = self.ctx.opaque_struct_type(&union_ty.name);
+						self.interned_value_to_llvm_type.insert(index, nominal_ty.as_any_type_enum());
+						nominal_ty.set_body(&view_ty.get_field_types(), false);
+						nominal_ty.as_basic_type_enum()
+					},
+				}
+			},
+			value::Type::Anyint
+			| value::Type::Anyfloat
+			| value::Type::Void
+			| value::Type::Fn(_)
+			| value::Type::NullPtr
+			| value::Type::Any
+			| value::Type::GenericPoison
+			| value::Type::Type
+			| value::Type::Never
+			| value::Type::EnumLiteral => unreachable!(
+				"cannot lower type {:?} as an LLVM basic type",
+				self.compilation_unit.values.index_to_key(index)
+			),
+		};
+		self.interned_value_to_llvm_type.insert(index, ty.as_any_type_enum());
+		ty
 	}
 
 	fn lower_type(
@@ -2091,87 +2315,14 @@ impl<'ctx> Lowerer<'ctx> {
 		if let Some(ty) = self.interned_value_to_llvm_type.get(&index) {
 			*ty
 		} else {
-			let ty = match self.compilation_unit.values.index_to_key_value(index) {
-				(value::Key::TypeVoid | value::Key::TypeNever, _) => self.ctx.void_type().into(),
-				(value::Key::TypeInt { bits, .. }, _) => self.ctx.custom_width_int_type(*bits as u32).into(),
-				(value::Key::Int { ty, .. }, _) => self.lower_type(*ty),
-				(value::Key::TypeUsize | value::Key::TypeIsize, _) => self
-					.ctx
-					.ptr_sized_int_type(&self.target_machine.get_target_data(), None)
-					.as_any_type_enum(),
-				(value::Key::TypeF16, _) => self.ctx.f16_type().as_any_type_enum(),
-				(value::Key::TypeF32, _) => self.ctx.f32_type().as_any_type_enum(),
-				(value::Key::TypeF64, _) => self.ctx.f64_type().as_any_type_enum(),
-				(value::Key::TypeF128, _) => self.ctx.f128_type().as_any_type_enum(),
-				(value::Key::TypeBool, _) => self.ctx.bool_type().as_any_type_enum(),
-				(value::Key::TypePtr(_), _) => self.ctx.ptr_type(inkwell::AddressSpace::default()).as_any_type_enum(),
-				(value::Key::TypeSlice(_), _) => {
-					let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
-					let len_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
-					self.ctx.struct_type(&[ptr_type.into(), len_type.into()], false).as_any_type_enum()
-				},
-				(value::Key::TypeAnyptr, _) => {
-					let ptr_type = self.ctx.ptr_type(inkwell::AddressSpace::default());
-					let type_id_type = self.ctx.ptr_sized_int_type(&self.target_machine.get_target_data(), None);
-					self.ctx
-						.struct_type(&[ptr_type.into(), type_id_type.into()], false)
-						.as_any_type_enum()
-				},
-				(value::Key::TypeArray(array), _) => {
-					let elem_ty: BasicTypeEnum = self.lower_type(array.elem_ty).try_into().unwrap();
-					elem_ty.array_type(array.len.try_into().unwrap()).as_any_type_enum()
-				},
-				(value::Key::TypeStruct(_), value::Value::Struct(struct_ty)) => {
-					let struct_ty = struct_ty.as_ref();
-					if let &value::StructLayout::Packed { storage_bits, .. } = &struct_ty.layout {
-						self.ctx.custom_width_int_type(storage_bits).as_any_type_enum()
-					} else {
-						let field_types = struct_ty
-							.fields
-							.iter()
-							.map(|f| self.lower_type(f.ty).try_into().unwrap())
-							.collect::<Vec<_>>();
-						let struct_ty = self.ctx.opaque_struct_type(&struct_ty.name);
-						struct_ty.set_body(&field_types, false);
-						struct_ty.as_any_type_enum()
-					}
-				},
-				(value::Key::TypeEnum(_), value::Value::Enum(r#enum)) => self.lower_type(r#enum.tag_ty),
-				(value::Key::TypeUnion(_), value::Value::Union(union_ty)) => {
-					let union_ty = union_ty.as_ref();
-					let canonical_field = self
-						.compilation_unit
-						.values
-						.type_union_layout(&self.compilation_unit.resolved_target, index)
-						.most_aligned_field
-						.0 as u32;
-					match self.lower_union_repr_for_field(index, canonical_field) {
-						UnionRepr::TagOnly(tag) => tag.get_type().as_any_type_enum(),
-						UnionRepr::Aggregate { ty: view_ty, .. } => {
-							let nominal_ty = self.ctx.opaque_struct_type(&union_ty.name);
-							self.interned_value_to_llvm_type.insert(index, nominal_ty.as_any_type_enum());
-							nominal_ty.set_body(&view_ty.get_field_types(), false);
-							nominal_ty.as_any_type_enum()
-						},
-					}
-				},
-				(value::Key::TypeFn(_), _) => {
+			let key = self.compilation_unit.values.index_to_key(index);
+			let ty = match key {
+				value::Key::Int { ty, .. } => self.lower_type(*ty),
+				value::Key::Type(value::Type::Void | value::Type::Never) => self.ctx.void_type().into(),
+				value::Key::Type(value::Type::Fn(_)) => {
 					let fn_ty = self.compilation_unit.values.index_to_key(index).as_type_fn();
-					let (ret_ty, sret) = {
-						let ret_repr = self.compute_fn_ret_ty_abi_repr(fn_ty);
-						let ret_ty = match ret_repr {
-							abi::Repr::ByValue => self.lower_type(fn_ty.ret_ty),
-							abi::Repr::ByRef => self.ctx.void_type().into(),
-							abi::Repr::AsInteger => {
-								let layout = self
-									.compilation_unit
-									.values
-									.type_layout(&self.compilation_unit.resolved_target, fn_ty.ret_ty);
-								self.ctx.custom_width_int_type((layout.size * 8) as _).into()
-							},
-						};
-						(ret_ty, ret_repr == abi::Repr::ByRef)
-					};
+					let ret_repr = self.compute_fn_ret_ty_abi_repr(fn_ty);
+					let sret = ret_repr == abi::Repr::ByRef;
 
 					let mut params = Vec::<BasicMetadataTypeEnum>::with_capacity(if sret { 1 } else { 0 } + fn_ty.params.len());
 					if sret {
@@ -2180,7 +2331,7 @@ impl<'ctx> Lowerer<'ctx> {
 
 					for (_, &param_ty) in fn_ty.params.iter().enumerate().filter(|&(i, _)| !fn_ty.comptime_params[i]) {
 						let param = match self.compute_fn_param_abi_repr(fn_ty, param_ty) {
-							abi::Repr::ByValue => self.lower_type(param_ty).try_into().unwrap(),
+							abi::Repr::ByValue => self.lower_type_basic(param_ty).into(),
 							abi::Repr::ByRef => self.ctx.ptr_type(AddressSpace::default()).into(),
 							abi::Repr::AsInteger => {
 								let layout = self
@@ -2193,18 +2344,100 @@ impl<'ctx> Lowerer<'ctx> {
 						params.push(param);
 					}
 
-					// TODO(zino): i don't like this
-					if let Ok(ret_ty) = <AnyTypeEnum as TryInto<BasicTypeEnum>>::try_into(ret_ty) {
-						ret_ty.fn_type(&params, fn_ty.var_args).as_any_type_enum()
-					} else {
-						let ret_ty = ret_ty.into_void_type();
-						ret_ty.fn_type(&params, fn_ty.var_args).as_any_type_enum()
+					match ret_repr {
+						abi::Repr::ByRef => self.ctx.void_type().fn_type(&params, fn_ty.var_args).as_any_type_enum(),
+						abi::Repr::AsInteger => {
+							let layout = self
+								.compilation_unit
+								.values
+								.type_layout(&self.compilation_unit.resolved_target, fn_ty.ret_ty);
+							self.ctx
+								.custom_width_int_type((layout.size * 8) as _)
+								.fn_type(&params, fn_ty.var_args)
+								.as_any_type_enum()
+						},
+						abi::Repr::ByValue => {
+							let value::Key::Type(ret_ty) = self.compilation_unit.values.index_to_key(fn_ty.ret_ty) else {
+								unreachable!("function return type is not a type")
+							};
+
+							// TODO(zino): i don't like this
+							match ret_ty {
+								value::Type::Void | value::Type::Never => {
+									self.ctx.void_type().fn_type(&params, fn_ty.var_args).as_any_type_enum()
+								},
+								value::Type::Int { .. }
+								| value::Type::Anyint
+								| value::Type::Anyfloat
+								| value::Type::Usize
+								| value::Type::Isize
+								| value::Type::F16
+								| value::Type::F32
+								| value::Type::F64
+								| value::Type::F128
+								| value::Type::Bool
+								| value::Type::Struct(_)
+								| value::Type::Enum(_)
+								| value::Type::Union(_)
+								| value::Type::Fn(_)
+								| value::Type::Ptr(_)
+								| value::Type::Slice(_)
+								| value::Type::Array(_)
+								| value::Type::NullPtr
+								| value::Type::Any
+								| value::Type::Anyptr
+								| value::Type::GenericPoison
+								| value::Type::Type
+								| value::Type::EnumLiteral => self
+									.lower_type_basic(fn_ty.ret_ty)
+									.fn_type(&params, fn_ty.var_args)
+									.as_any_type_enum(),
+							}
+						},
 					}
 				},
-				_ => unreachable!(
-					"cannot lower type {:?}, is a comptime type",
-					self.compilation_unit.values.index_to_key(index)
-				),
+				value::Key::Type(
+					value::Type::Int { .. }
+					| value::Type::Anyint
+					| value::Type::Anyfloat
+					| value::Type::Usize
+					| value::Type::Isize
+					| value::Type::F16
+					| value::Type::F32
+					| value::Type::F64
+					| value::Type::F128
+					| value::Type::Bool
+					| value::Type::Struct(_)
+					| value::Type::Enum(_)
+					| value::Type::Union(_)
+					| value::Type::Ptr(_)
+					| value::Type::Slice(_)
+					| value::Type::Array(_)
+					| value::Type::NullPtr
+					| value::Type::Any
+					| value::Type::Anyptr
+					| value::Type::GenericPoison
+					| value::Type::Type
+					| value::Type::EnumLiteral,
+				) => self.lower_type_basic(index).as_any_type_enum(),
+
+				// not types
+				value::Key::Undefined { .. }
+				| value::Key::Str { .. }
+				| value::Key::Float { .. }
+				| value::Key::Bool(_)
+				| value::Key::Ptr(_)
+				| value::Key::Fn(_)
+				| value::Key::EnumTag { .. }
+				| value::Key::Aggregate { .. }
+				| value::Key::NullPtr
+				| value::Key::Void
+				| value::Key::Unreachable
+				| value::Key::Union { .. }
+				| value::Key::GenericPoison { .. }
+				| value::Key::DeclRef { .. }
+				| value::Key::FnDecl(_)
+				| value::Key::EnumLiteral(_) => unreachable!("cannot lower {key:?} as an LLVM type"),
 			};
 			self.interned_value_to_llvm_type.insert(index, ty);
 			ty
@@ -2377,7 +2610,7 @@ impl<'ctx> Lowerer<'ctx> {
 
 		let active_payload_ty = union_val_ty.fields[field_idx as usize].ty;
 		let payload_ty = active_payload_ty.unwrap_or_else(|| union_val_ty.fields[layout.most_aligned_field.0].ty.unwrap());
-		let payload_llvm_ty: BasicTypeEnum = self.lower_type(payload_ty).try_into().unwrap();
+		let payload_llvm_ty: BasicTypeEnum = self.lower_type_basic(payload_ty);
 		let payload_layout = self
 			.compilation_unit
 			.values
@@ -2400,11 +2633,11 @@ impl<'ctx> Lowerer<'ctx> {
 
 		let mut view_fields = Vec::with_capacity(4);
 		if tag_first {
-			view_fields.push(self.lower_type(union_val_ty.tag_ty.unwrap()).try_into().unwrap());
+			view_fields.push(self.lower_type_basic(union_val_ty.tag_ty.unwrap()));
 		}
 		view_fields.push(payload_view_ty);
 		if layout.tag.size != 0 && !tag_first {
-			view_fields.push(self.lower_type(union_val_ty.tag_ty.unwrap()).try_into().unwrap());
+			view_fields.push(self.lower_type_basic(union_val_ty.tag_ty.unwrap()));
 		}
 		if layout.trailing_padding != 0 {
 			view_fields.push(
@@ -2418,7 +2651,7 @@ impl<'ctx> Lowerer<'ctx> {
 			let aligned_field_ty = union_val_ty.fields[layout.most_aligned_field.0]
 				.ty
 				.expect("most-aligned union field");
-			let aligned_field_ty: BasicTypeEnum = self.lower_type(aligned_field_ty).try_into().unwrap();
+			let aligned_field_ty: BasicTypeEnum = self.lower_type_basic(aligned_field_ty);
 			view_fields.push(aligned_field_ty.array_type(0).as_basic_type_enum());
 		}
 
