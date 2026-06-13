@@ -949,9 +949,10 @@ impl<'a> Sema<'a> {
 				self.cu.queue_runtime_function_analysis_if_needed(func_val);
 			}
 
+			let args = self.instructions_payload_alloc.alloc_slice_fill_iter(runtime_args);
 			let inst = self.inst(block, vtir::Opcode::FnCall {
 				callee: func_val.map(vtir::InstructionRef::Interned).unwrap_or(fun),
-				params: runtime_args,
+				args,
 			});
 			self.vuir_map.insert(call_vuir_id, inst);
 

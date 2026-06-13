@@ -430,6 +430,14 @@ impl Parser {
 				continue;
 			}
 
+			if is_const {
+				match self.parse_associated_const(is_pub, start_span) {
+					Ok(item) => associated_items.push(item),
+					Err(err) => self.push_error(err),
+				}
+				continue;
+			}
+
 			// no, a field
 			match self.peek().kind {
 				TokenKind::Ident { .. } => match self.parse_enum_variant_def(start_span) {

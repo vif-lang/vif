@@ -1099,7 +1099,7 @@ pub const target: Target = Target {{
 							);
 						} else {
 							let param_ty = fun_ty.params[physical_i];
-							let vtir_inst = sema.inst(block, ir::vtir::Opcode::FnParam {
+							let vtir_inst = sema.inst(block, ir::vtir::Opcode::FnArg {
 								name: param.name,
 								ty: param_ty, /* don't take fn block param type but
 								               * instantiated fn param type */

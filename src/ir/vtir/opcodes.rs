@@ -32,7 +32,7 @@ pub enum Opcode {
 		r#loop: vtir::InstructionId,
 	},
 
-	FnParam {
+	FnArg {
 		name: Intern<str>,
 		ty: value::Index,
 	},
@@ -58,7 +58,7 @@ pub enum Opcode {
 	},
 	FnCall {
 		callee: vtir::InstructionRef,
-		params: Vec<vtir::InstructionRef>,
+		args: &'static [vtir::InstructionRef],
 	},
 	// structs
 	/// Initialize a structure, returning its value
@@ -335,7 +335,7 @@ pub fn type_of(
 				Opcode::Invalid => unreachable!(),
 				Opcode::Block { ret_ty, .. } | Opcode::Loop { ret_ty, .. } => *ret_ty,
 				Opcode::FnCall { callee, .. } => values.index_to_key(type_of(values, instructions, callee)).as_type_fn().ret_ty,
-				Opcode::FnParam { ty, .. } => *ty,
+				Opcode::FnArg { ty, .. } => *ty,
 				Opcode::StackAlloc { ty } => *ty,
 				Opcode::Load { ptr } => {
 					let ptr_ty = type_of(values, instructions, ptr);

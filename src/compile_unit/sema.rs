@@ -1390,8 +1390,41 @@ impl<'a> Sema<'a> {
 					(enum_key, enum_idx)
 				};
 
+				let namespace = self
+					.cu
+					.namespaces
+					.with_mut(|namespaces| namespaces.push(Namespace::with_parent(self.blocks[block].namespace, enum_idx)));
+
+				let block = self.child_block(block);
+				self.blocks[*block].namespace = namespace;
+
+				if !decls.is_empty() {
+					let mut namespace_decls = FxHashMap::default();
+					let mut cu_decls = self.cu.decls.lock();
+					for decl_id in decls {
+						let vuir::Opcode::Declaration(decl) = self.vuir.instructions[*decl_id].clone() else {
+							unreachable!()
+						};
+
+						let decl_id = cu_decls.push(Decl {
+							name: decl.name,
+							module: self.module,
+							namespace,
+							analysis_state: DeclAnalysisState::Unanalysed {
+								module: self.module,
+								vuir_id: *decl_id,
+							},
+						});
+						namespace_decls.insert(decl.name, decl_id);
+					}
+
+					self.cu.namespaces.with_mut(|namespaces| {
+						namespaces[namespace].decls = namespace_decls;
+					});
+				}
+
 				let (tag_ty, had_type) = if let Some((tag_ty, tag_ty_span)) = tag_ty {
-					let tag_ty = self.resolve_type(block, tag_ty, tag_ty_span)?;
+					let tag_ty = self.resolve_type(*block, tag_ty, tag_ty_span)?;
 					// ensure tag_ty is numeric
 					if !matches!(
 						self.cu.values.index_to_key(tag_ty),
@@ -1438,7 +1471,7 @@ impl<'a> Sema<'a> {
 							.value
 							.map(|(value, value_span)| {
 								let value = self.resolve_inst(&value);
-								let value = self.coerce(block, &tag_ty, &value, &value_span)?;
+								let value = self.coerce(*block, &tag_ty, &value, &value_span)?;
 								let value = self.try_resolve_comptime_value(&value).unwrap();
 								Ok(value)
 							})
@@ -1477,15 +1510,32 @@ impl<'a> Sema<'a> {
 
 				let fields_static = self.cu.values.alloc_slice(&fields);
 				let enum_ty = self.cu.values.value_allocate(TypeEnum {
-					name: self.make_type_name(block, id, *naming),
+					name: self.make_type_name(*block, id, *naming),
 					tag_ty,
 					fields: fields_static,
+					namespace,
 					linear: *linear,
 				});
 
 				self.cu.values.intern_non_trivial(&enum_key, value::Value::Enum(enum_ty));
 
+				if !decls.is_empty() {
+					let self_decl_id = {
+						let mut cu_decls = self.cu.decls.lock();
+						cu_decls.push(Decl {
+							name: COMMON_INTERNS.self_ty_symbol,
+							module: self.module,
+							namespace,
+							analysis_state: DeclAnalysisState::Analysed { value: enum_idx },
+						})
+					};
+					self.cu.namespaces.with_mut(|namespaces| {
+						namespaces[namespace].decls.insert(COMMON_INTERNS.self_ty_symbol, self_decl_id);
+					});
+				}
+
 				self.vuir_map.insert(id, vtir::InstructionRef::Interned(enum_idx));
+				self.unstack_block(block);
 				Ok((vtir::InstructionRef::Interned(enum_idx), ControlFlow::May))
 			},
 			vuir::Opcode::DeclUnion {
@@ -1592,18 +1642,24 @@ impl<'a> Sema<'a> {
 									value: Anyint::from(idx).into(),
 								}),
 							}));
-						let enum_ty = self.cu.values.value_allocate(TypeEnum {
-							name: enum_name,
-							tag_ty,
-							fields: enum_fields,
-							linear: *linear,
-						});
 						let enum_key = value::Key::TypeEnum(value::NamespaceType {
 							inst: GlobalVuirInstructionId {
 								module: self.module,
 								inst: id,
 							},
 							captures,
+						});
+						let enum_idx = self.cu.values.intern_non_trivial(&enum_key, value::Value::none());
+						let enum_namespace = self
+							.cu
+							.namespaces
+							.with_mut(|namespaces| namespaces.push(Namespace::with_parent(namespace, enum_idx)));
+						let enum_ty = self.cu.values.value_allocate(TypeEnum {
+							name: enum_name,
+							tag_ty,
+							fields: enum_fields,
+							namespace: enum_namespace,
+							linear: *linear,
 						});
 						Some(self.cu.values.intern_non_trivial(&enum_key, value::Value::Enum(enum_ty)))
 					},
@@ -1764,25 +1820,10 @@ impl<'a> Sema<'a> {
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 
-						let Some(field) = callconv_enum_ty.fields.iter().find(|f| f.value == *val) else {
-							self.push_error(
-								Diagnostic::error()
-									.with_message("invalid `CallingConvention` enum tag")
-									.with_label(Label::primary().with_span(self.diag_span(*span))),
-							);
-							return Err(AnalyzeError::AnalysisFailed);
-						};
-
-						let Some(callconv) = CallingConvention::from_name(field.name.as_ref()) else {
-							self.push_error(
-								Diagnostic::error()
-									.with_message(format!("unsupported `CallingConvention` variant `{}`", field.name))
-									.with_label(Label::primary().with_span(self.diag_span(*span))),
-							);
-							return Err(AnalyzeError::AnalysisFailed);
-						};
-
-						Some(callconv)
+						let val = self.cu.values.index_to_key(*val).as_int().1;
+						let val = val.to_u64().unwrap() as u8;
+						assert!(callconv_enum_ty.fields.len() == CallingConvention::Count as _);
+						Some(unsafe { core::mem::transmute(val) })
 					} else {
 						None
 					};
@@ -1790,12 +1831,12 @@ impl<'a> Sema<'a> {
 					// `extern "..."` is an extern namespace/library hint, not a calling
 					// convention. If no explicit `#callconv(...)` is provided, extern fns
 					// default to C calling convention.
-					let callconv = if callconv.is_some() {
+					let callconv = if let Some(callconv) = callconv {
 						callconv
 					} else if *external {
-						Some(CallingConvention::C)
+						CallingConvention::C
 					} else {
-						None
+						CallingConvention::Vif
 					};
 
 					let fn_ty = value::Key::TypeFn(TypeFn {
@@ -3571,6 +3612,14 @@ impl<'a> Sema<'a> {
 						vtir::InstructionRef::Interned(value)
 					},
 					(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
+						if let Some(decl) = self
+							.cu
+							.namespaces
+							.with(|namespaces| namespaces[e.namespace].decls.get(field).copied())
+						{
+							let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
+							return Ok(vtir::InstructionRef::Interned(value));
+						}
 						let field_idx = e.field_idx_by_name(field).ok_or_else(|| {
 							self.diag_field_not_found(field, &lhs, field_span);
 							AnalyzeError::AnalysisFailed
@@ -3753,17 +3802,26 @@ impl<'a> Sema<'a> {
 						vtir::InstructionRef::Interned(ptr)
 					},
 					(value::Key::TypeEnum(_), value::Value::Enum(e)) => {
-						let field_idx = e.field_idx_by_name(field).ok_or_else(|| {
-							self.diag_field_not_found(field, &lhs_ty, span);
-							AnalyzeError::AnalysisFailed
-						})?;
-						let tag = value::Key::EnumTag {
-							enum_ty: lhs,
-							val: e.fields[field_idx].value,
-						};
-						let value = self.cu.values.intern_trivial(&tag);
-						let value = self.cu.values.intern_value_ptr(value);
-						vtir::InstructionRef::Interned(value)
+						if let Some(field_idx) = e.field_idx_by_name(field) {
+							let tag = value::Key::EnumTag {
+								enum_ty: lhs,
+								val: e.fields[field_idx].value,
+							};
+							let value = self.cu.values.intern_trivial(&tag);
+							let value = self.cu.values.intern_value_ptr(value);
+							vtir::InstructionRef::Interned(value)
+						} else if let Some(decl) = self
+							.cu
+							.namespaces
+							.with(|namespaces| namespaces[e.namespace].decls.get(field).copied())
+						{
+							let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
+							let value = self.cu.values.intern_value_ptr(value);
+							vtir::InstructionRef::Interned(value)
+						} else {
+							self.diag_decl_not_found(field, &lhs, span);
+							return Err(AnalyzeError::AnalysisFailed);
+						}
 					},
 					(value::Key::TypeUnion(_), value::Value::Union(u)) => {
 						let u = u.as_ref();

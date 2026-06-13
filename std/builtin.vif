@@ -4,8 +4,14 @@ const Target = @import("Target.vif")
 
 /// Calling conventions, should be in sync with compiler internals.
 pub const CallingConvention = enum(u8) {
+	// TODO(zino): ARM64
+	pub const winapi: CallingConvention = .x86_64_windows
+
+	vif,
 	c,
 	fast,
 	cold,
-	winapi,
+
+	/// https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions
+	x86_64_windows
 }

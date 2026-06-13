@@ -2625,14 +2625,41 @@ impl<'ast> Lowerer<'ast> {
 			self.scopes.push(Scope::Namespace(top_scope));
 			ScopeId(self.scopes.len() - 1)
 		};
+
 		let (variants, decls) = {
 			let mut variants = vec![];
-			// hashmap used to report error on redefinition of variant
+
+			// hashmap used to report error on redefinition of variant or decl
 			let mut variant_name_to_span = FxHashMap::default();
 			for variant in enum_decl.variants {
 				let value = variant
 					.value
 					.map(|expr| (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span));
+
+				let associated_decl = match &self.scopes[enum_scope] {
+					Scope::Namespace(namespace) => namespace.decl_to_ast_node.get(&variant.ident.symbol).copied(),
+					_ => unreachable!(),
+				};
+				if let Some((_, decl_span)) = associated_decl {
+					self.errors.push(
+						Diagnostic::error()
+							.with_message(format!(
+								"enum variant `{}` conflicts with an associated declaration",
+								variant.ident.symbol
+							))
+							.with_label(
+								Label::primary()
+									.with_span(self.diag_span(variant.ident.span))
+									.with_message("variant defined here"),
+							)
+							.with_label(
+								Label::secondary()
+									.with_span(self.diag_span(decl_span))
+									.with_message("associated declaration defined here"),
+							)
+							.with_note("a name can only appear once in an enum namespace"),
+					);
+				}
 
 				// ensure variant is unique
 				if let Some(existing_variant_span) = variant_name_to_span.get(&variant.ident.symbol) {
@@ -2662,7 +2689,7 @@ impl<'ast> Lowerer<'ast> {
 			}
 
 			let decls = {
-				let associated_items_scope = self.stack_block(block_scope, BlockKind::Body);
+				let associated_items_scope = self.stack_block(enum_scope, BlockKind::Body);
 				let mut decls = vec![];
 				for item in enum_decl.associated_items {
 					decls.push(self.lower_associated_item(*associated_items_scope, item));

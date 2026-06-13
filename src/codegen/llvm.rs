@@ -1,7 +1,9 @@
-mod abi;
-
 use std::sync::OnceLock;
 
+use bumpalo::{
+	Bump,
+	collections::FromIteratorIn,
+};
 use inkwell::{
 	AddressSpace,
 	attributes::{
@@ -50,6 +52,7 @@ use inkwell::{
 		BasicMetadataValueEnum,
 		BasicValue,
 		BasicValueEnum,
+		BasicValueUse,
 		FunctionValue,
 		IntValue,
 		PhiValue,
@@ -61,9 +64,11 @@ use rustc_hash::FxHashMap;
 
 use crate::{
 	Build,
-	codegen::llvm::{
-		self,
-		abi::FnAbi,
+	codegen::{
+		abi,
+		llvm::{
+			self,
+		},
 	},
 	compile_unit::{
 		CompilationUnit,
@@ -106,6 +111,9 @@ struct LlvmAttributes {
 	mustprogress: Attribute,
 	uwtable_sync: Attribute,
 	sret: Attribute,
+	byval: Attribute,
+	noalias: Attribute,
+	nonnull: Attribute,
 }
 
 impl LlvmAttributes {
@@ -128,6 +136,9 @@ impl LlvmAttributes {
 			mustprogress: enum_attr!("mustprogress"),
 			uwtable_sync: enum_attr!("uwtable", 1),
 			sret: enum_attr!("sret"),
+			byval: enum_attr!("byval"),
+			noalias: enum_attr!("noalias"),
+			nonnull: enum_attr!("nonnull"),
 		}
 	}
 }
@@ -150,9 +161,9 @@ struct FnLowerCtx<'a, 'ctx> {
 	vtir_block_to_break_list: FxHashMap<vtir::InstructionId, BreakList<'ctx>>,
 	// TODO(zino): remove these options once function-lowering state has a cleaner initialization path.
 	cur_fn: Option<inkwell::values::FunctionValue<'ctx>>,
-	cur_fn_abi: Option<FnAbi<'ctx>>,
-	cur_fn_param_idx: u32,
-	cur_fn_runtime_param_idx: usize,
+	cur_fn_args: Vec<BasicValueEnum<'ctx>>,
+	cur_llvm_fn_param_idx: u32,
+	cur_fn_ty: value::Index,
 	di_gen: Option<DebugInfoGen<'ctx>>,
 }
 
@@ -216,7 +227,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		pointee_ty: value::Index,
 		ptr: PointerValue<'ctx>,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
-		let val = if self.lowerer.type_is_by_ref(pointee_ty) {
+		let val = if self.lowerer.vif_abi_type_is_by_ref(pointee_ty) {
 			let pointee_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
 			let alloca = self.build_alloca_at_top_of_bb(pointee_ty_llvm, "load.byref")?;
 			let pointee_ty_layout = self
@@ -250,7 +261,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		elem_ptr: PointerValue<'ctx>,
 		value: AnyValueEnum<'ctx>,
 	) -> Result<(), BuilderError> {
-		if self.lowerer.type_is_by_ref(elem_ty) {
+		if self.lowerer.vif_abi_type_is_by_ref(elem_ty) {
 			let elem_ty_layout = self
 				.compilation_unit
 				.values
@@ -285,7 +296,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		value: BasicValueEnum<'ctx>,
 		name: &str,
 	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
-		if self.lowerer.type_is_by_ref(ty) {
+		if self.lowerer.vif_abi_type_is_by_ref(ty) {
 			let ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
 			let storage = self.build_alloca_at_top_of_bb(ty, "materialize")?;
 			#[allow(clippy::disallowed_methods)]
@@ -294,61 +305,6 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		} else {
 			Ok(value.as_any_value_enum())
 		}
-	}
-
-	fn lower_fn_param_from_abi(
-		&mut self,
-		ty: value::Index,
-		mode: abi::ParamMode,
-		param: BasicValueEnum<'ctx>,
-	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
-		if self.lowerer.type_is_by_ref(ty) && mode == abi::ParamMode::Direct {
-			Ok(match param {
-				BasicValueEnum::PointerValue(ptr) => ptr.as_any_value_enum(),
-				param => {
-					let ty: BasicTypeEnum = self.lowerer.lower_type(ty).try_into().unwrap();
-					let storage = self.build_alloca_at_top_of_bb(ty, "abi.param.byref")?;
-					#[allow(clippy::disallowed_methods, reason = "abi gave us the value, no by-ref semantics to apply")]
-					self.builder().build_store(storage, param)?;
-					storage.as_any_value_enum()
-				},
-			})
-		} else {
-			Ok(param.as_any_value_enum())
-		}
-	}
-
-	fn lower_fn_arg_to_abi(
-		&mut self,
-		ty: value::Index,
-		mode: abi::ParamMode,
-		abi_ty: Option<BasicMetadataTypeEnum<'ctx>>,
-		value: AnyValueEnum<'ctx>,
-	) -> Result<AnyValueEnum<'ctx>, BuilderError> {
-		if mode == abi::ParamMode::ByRef {
-			return Ok(value);
-		}
-
-		Ok(match abi_ty {
-			#[allow(clippy::disallowed_methods, reason = "use the llvm type directly")]
-			Some(BasicMetadataTypeEnum::IntType(int_ty)) if self.lowerer.type_is_by_ref(ty) => self
-				.builder()
-				.build_load(int_ty, value.into_pointer_value(), "abi.arg.int")?
-				.as_any_value_enum(),
-			#[allow(clippy::disallowed_methods, reason = "use the llvm type directly")]
-			Some(BasicMetadataTypeEnum::IntType(int_ty)) if let AnyValueEnum::StructValue(value) = value => {
-				let storage = self.build_alloca_at_top_of_bb(value.get_type().as_basic_type_enum(), "")?;
-				self.builder().build_store(storage, value)?;
-				self.builder().build_load(int_ty, storage, "")?.as_any_value_enum()
-			},
-			Some(BasicMetadataTypeEnum::PointerType(_)) if self.lowerer.type_is_by_ref(ty) => value,
-			Some(BasicMetadataTypeEnum::PointerType(_)) if let AnyValueEnum::StructValue(value) = value => {
-				let storage = self.build_alloca_at_top_of_bb(value.get_type().as_basic_type_enum(), "")?;
-				self.build_store(ty, storage, value.as_any_value_enum())?;
-				storage.as_any_value_enum()
-			},
-			_ => value,
-		})
 	}
 
 	fn lower_body_inst(
@@ -385,7 +341,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				self.builder().position_at_end(after_loop_bb);
 
 				if *ret_ty != self.compilation_unit.values.common.void_t {
-					let ret_ty = if self.lowerer.type_is_by_ref(*ret_ty) {
+					let ret_ty = if self.lowerer.vif_abi_type_is_by_ref(*ret_ty) {
 						self.lowerer.ctx.ptr_type(AddressSpace::default()).as_basic_type_enum()
 					} else {
 						self.lowerer.lower_type(*ret_ty).try_into().unwrap()
@@ -501,28 +457,16 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				self.build_store(dst_ptr_ty.pointee_ty, dst, src.as_any_value_enum())?;
 			},
-			vtir::Opcode::FnParam { ty, .. } => {
+			vtir::Opcode::FnArg { ty, .. } => {
 				let fun = self.cur_fn.unwrap();
-				let param = fun.get_nth_param(self.cur_fn_param_idx).unwrap();
-				self.cur_fn_param_idx += 1;
-				let mode = self.cur_fn_abi.as_ref().unwrap().param_modes[self.cur_fn_runtime_param_idx];
-				self.cur_fn_runtime_param_idx += 1;
-				let param = self.lower_fn_param_from_abi(*ty, mode, param)?;
-				self.vtir_inst_to_llvm_value.insert(*id, param);
+				let arg: BasicValueEnum = self.cur_fn_args[self.cur_llvm_fn_param_idx as usize];
+				self.cur_llvm_fn_param_idx += 1;
+				self.vtir_inst_to_llvm_value.insert(*id, arg.as_any_value_enum());
 			},
-			vtir::Opcode::Return { value } => match self.cur_fn_abi.as_ref().unwrap().ret_mode {
-				abi::RetMode::Direct => {
-					if let Some(value) = value
-						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
-					{
-						let value = self.resolve_inst(value);
-						let value: BasicValueEnum = value.try_into().unwrap();
-						self.builder().build_return(Some(&value))?;
-					} else {
-						self.builder().build_return(None)?;
-					};
-				},
-				abi::RetMode::SretFirstParam(_) => {
+			vtir::Opcode::Return { value } => {
+				let fn_ty = self.lowerer.compilation_unit.values.index_to_key(self.cur_fn_ty).as_type_fn();
+				let ret_repr = self.lowerer.compute_fn_ret_ty_abi_repr(fn_ty);
+				if ret_repr == abi::Repr::ByRef {
 					let ret_ptr = self.cur_fn.unwrap().get_nth_param(0).unwrap();
 					if let Some(value) = value
 						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
@@ -532,59 +476,152 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.build_store(value_ty, ret_ptr.into_pointer_value(), value)?;
 					}
 					self.builder().build_return(None)?;
-				},
+				} else {
+					if let Some(value) = value
+						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
+					{
+						let value_ty = vtir.type_of(&self.compilation_unit.values, value);
+						let value = self.resolve_inst(value);
+						let value: BasicValueEnum = value.try_into().unwrap();
+
+						let value = match ret_repr {
+							abi::Repr::ByValue => {
+								if self.lowerer.vif_abi_type_is_by_ref(value_ty) {
+									let value_ty: BasicTypeEnum = self.lowerer.lower_type(value_ty).try_into().unwrap();
+									self.builder()
+										.build_load(value_ty, value.into_pointer_value(), "ret.byref.to.byval.load")?
+								} else {
+									value
+								}
+							},
+							abi::Repr::AsInteger => {
+								let layout = self
+									.compilation_unit
+									.values
+									.type_layout(&self.compilation_unit.resolved_target, value_ty);
+								let int_ty = self.lowerer.ctx.custom_width_int_type((layout.size * 8) as _);
+								if self.lowerer.vif_abi_type_is_by_ref(value_ty) {
+									self.builder().build_load(int_ty, value.into_pointer_value(), "ret.asinteger")?
+								} else {
+									let value_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(value_ty).try_into().unwrap();
+									let storage = self.build_alloca_at_top_of_bb(value_ty_llvm, "ret.asinteger.storage")?;
+									self.builder().build_store(storage, value)?;
+									self.builder().build_load(int_ty, storage, "ret.asinteger")?
+								}
+							},
+							abi::Repr::ByRef => unreachable!(),
+						};
+
+						self.builder().build_return(Some(&value))?;
+					} else {
+						self.builder().build_return(None)?;
+					};
+				}
 			},
-			vtir::Opcode::FnCall { callee, params } => {
+			vtir::Opcode::FnCall { callee, args } => {
 				let fn_ty_idx = vtir.type_of(&self.compilation_unit.values, callee);
 				let fn_ty = self.compilation_unit.values.index_to_key(fn_ty_idx).as_type_fn();
 				let callconv = fn_ty.callconv;
 				let llvm_fn_ty = self.lowerer.lower_type(fn_ty_idx).into_function_type();
 				let callee_param_tys = llvm_fn_ty.get_param_types();
-				let fn_abi = abi::compute_fn_abi(self.lowerer, fn_ty);
+				let sret = self.lowerer.fn_use_sret(fn_ty);
 
-				let (params, ret_ptr) = {
-					let mut values = Vec::<BasicMetadataValueEnum>::with_capacity(params.len());
+				let (args, ret_ptr) = {
+					let mut values = Vec::<BasicMetadataValueEnum>::with_capacity(args.len());
 
-					// if we have a ret ptr (sret), it is the first param
-					// use fn_returns_by_ref_in_first_param instead of recomputing the ABI which is costlier
-					// TODO(zino): consider wrapping LLVM types with compiler-side ABI metadata.
-					let ret_ptr = if abi::fn_returns_by_ref_in_first_param(self.lowerer, fn_ty) {
+					let ret_ptr = if sret {
 						let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
-						let ret_ptr = self.build_alloca_at_top_of_bb(ret_ty, "sret_ret_ptr")?;
+						let ret_ptr = self.build_alloca_at_top_of_bb(ret_ty, "call.sret")?;
 						values.push(ret_ptr.into());
 						Some(ret_ptr)
 					} else {
 						None
 					};
 
-					let abi_param_offset = usize::from(matches!(fn_abi.ret_mode, abi::RetMode::SretFirstParam(_)));
-					for (i, param) in params.iter().enumerate() {
-						let param_val = self.resolve_inst(param);
-						let param_ty = vtir.type_of(&self.compilation_unit.values, param);
-						let param_mode = fn_abi.param_modes.get(i).copied().unwrap_or(abi::ParamMode::Direct);
-						let abi_ty = callee_param_tys.get(i + abi_param_offset).copied();
-						let final_val = self.lower_fn_arg_to_abi(param_ty, param_mode, abi_ty, param_val)?;
-						values.push(final_val.try_into().unwrap());
+					let abi_param_offset = usize::from(sret);
+					for (i, arg) in args.iter().enumerate() {
+						let arg_ty = vtir.type_of(&self.compilation_unit.values, arg);
+						let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+						let arg: BasicValueEnum = self.resolve_inst(arg).try_into().unwrap();
+						// convert from vif abi to fn abi
+						let val = match self.lowerer.compute_fn_param_abi_repr(fn_ty, arg_ty) {
+							abi::Repr::ByValue => {
+								if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+									self.builder().build_load(arg_ty_llvm, arg.into_pointer_value(), "")?
+								} else {
+									arg
+								}
+							},
+							abi::Repr::ByRef => {
+								if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+									arg
+								} else {
+									let alloca = self.build_alloca_at_top_of_bb(arg_ty_llvm, "call.arg.abi.byref")?;
+									self.builder().build_store(alloca, arg)?;
+									alloca.into()
+								}
+							},
+							abi::Repr::AsInteger => {
+								let arg_ty_layout = self
+									.compilation_unit
+									.values
+									.type_layout(&self.compilation_unit.resolved_target, arg_ty);
+								let int_ty = self.lowerer.ctx.custom_width_int_type((arg_ty_layout.size * 8) as _);
+								if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+									self.builder().build_load(int_ty, arg.into_pointer_value(), "")?
+								} else {
+									let alloca = self.build_alloca_at_top_of_bb(int_ty, "call.arg.abi.asinteger")?;
+									self.builder().build_store(alloca, arg)?;
+									self.builder().build_load(int_ty, alloca, "")?
+								}
+							},
+						};
+						values.push(val.try_into().unwrap());
 					}
 					(values, ret_ptr)
 				};
 
 				let callee = self.resolve_inst(callee);
 				let val = match callee {
-					AnyValueEnum::FunctionValue(callee_fn) => self.builder().build_direct_call(callee_fn, &params, "")?,
-					AnyValueEnum::PointerValue(fn_ptr) => self.builder().build_indirect_call(llvm_fn_ty, fn_ptr, &params, "")?,
+					AnyValueEnum::FunctionValue(callee_fn) => self.builder().build_direct_call(callee_fn, &args, "")?,
+					AnyValueEnum::PointerValue(fn_ptr) => self.builder().build_indirect_call(llvm_fn_ty, fn_ptr, &args, "")?,
 					_ => unreachable!("FnCall callee must lower to a function or function pointer"),
 				};
 
-				if let Some(callconv) = callconv {
-					val.set_call_convention(self.lowerer.llvm_callconv_id(callconv) as u32);
-				}
+				val.set_call_convention(self.lowerer.llvm_callconv_id(callconv) as u32);
 
 				// if we have a ret_ptr, the actual val we returns for this call is a load to this pointer
+				let ret_repr = self.lowerer.compute_fn_ret_ty_abi_repr(fn_ty);
 				let val = if let Some(ret_ptr) = ret_ptr {
-					self.build_load(fn_ty.ret_ty, ret_ptr)?
+					// if vif abi already except a ref for this ty, we are good
+					if self.lowerer.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
+						ret_ptr.as_any_value_enum()
+					} else {
+						self.build_load(fn_ty.ret_ty, ret_ptr)?
+					}
+				} else if ret_repr == abi::Repr::AsInteger {
+					let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
+					let abi_value = val.try_as_basic_value().unwrap_basic();
+					let storage = self.build_alloca_at_top_of_bb(ret_ty, "call.ret.asinteger")?;
+					self.builder().build_store(storage, abi_value)?;
+					if self.lowerer.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
+						storage.as_any_value_enum()
+					} else {
+						self.builder()
+							.build_load(ret_ty, storage, "call.ret.frominteger")?
+							.as_any_value_enum()
+					}
 				} else {
-					val.as_any_value_enum()
+					// vif abi may expect a ref, wrap in a alloc
+					if self.lowerer.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
+						let ret_ty: BasicTypeEnum = self.lowerer.lower_type(fn_ty.ret_ty).try_into().unwrap();
+						let alloca = self.build_alloca_at_top_of_bb(ret_ty, "")?;
+						let val: BasicValueEnum = val.try_as_basic_value().unwrap_basic();
+						self.builder().build_store(alloca, val)?;
+						alloca.as_any_value_enum()
+					} else {
+						val.as_any_value_enum()
+					}
 				};
 
 				self.vtir_inst_to_llvm_value.insert(*id, val);
@@ -1541,7 +1578,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		self.builder().position_at_end(after_block_bb);
 
 		let phi = if ret_ty != self.compilation_unit.values.common.void_t {
-			let ret_ty = if self.lowerer.type_is_by_ref(ret_ty) {
+			let ret_ty = if self.lowerer.vif_abi_type_is_by_ref(ret_ty) {
 				self.lowerer.ctx.ptr_type(AddressSpace::default()).as_basic_type_enum()
 			} else {
 				self.lowerer.lower_type(ret_ty).try_into().unwrap()
@@ -1566,17 +1603,17 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		&mut self,
 		interned_fn_value: value::Index,
 		body: &Vtir,
-	) {
+	) -> Result<(), BuilderError> {
 		let fn_value = self.compilation_unit.values.index_to_key(interned_fn_value).as_fn();
+		let fn_ty_idx = fn_value.ty;
 		let fn_ty = self.compilation_unit.values.index_to_key(fn_value.ty).as_type_fn();
-		let fn_abi = abi::compute_fn_abi(self.lowerer, fn_ty);
 
 		if fn_ty.external {
 			let fn_value = self
 				.resolve_inst(&InstructionRef::Interned(interned_fn_value))
 				.into_function_value();
 			fn_value.set_linkage(Linkage::External);
-			return;
+			return Ok(());
 		}
 
 		let fn_value = self
@@ -1621,12 +1658,55 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		}
 
 		self.cur_fn = Some(fn_value);
-		self.cur_fn_param_idx = match fn_abi.ret_mode {
-			abi::RetMode::Direct => 0,
-			abi::RetMode::SretFirstParam(_) => 1,
-		};
-		self.cur_fn_runtime_param_idx = 0;
-		self.cur_fn_abi = Some(fn_abi);
+		self.cur_llvm_fn_param_idx = 0;
+		self.cur_fn_ty = fn_ty_idx;
+
+		// need to decode from the function ABI to the vif ABI
+		let sret = self.lowerer.fn_use_sret(fn_ty);
+		self.cur_fn_args = Vec::with_capacity(fn_ty.params.len());
+		for (i, &arg_ty) in fn_ty
+			.params
+			.iter()
+			.enumerate()
+			.filter(|&(i, _)| !fn_ty.comptime_params[i])
+			.map(|(_, arg_ty)| arg_ty)
+			.enumerate()
+		{
+			let arg = fn_value.get_nth_param(if sret { 1 } else { 0 } + i as u32).unwrap();
+			let arg_abi_ty = arg.get_type();
+			let arg: BasicValueEnum = match self.lowerer.compute_fn_param_abi_repr(fn_ty, arg_ty) {
+				abi::Repr::ByValue => {
+					if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+						let alloca = self.build_alloca_at_top_of_bb(arg_abi_ty, "fn.arg.byval")?;
+						self.builder().build_store(alloca, arg)?;
+						alloca.into()
+					} else {
+						arg
+					}
+				},
+				abi::Repr::ByRef => {
+					if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+						arg
+					} else {
+						let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+						self.builder().build_load(pointee_ty, arg.into_pointer_value(), "")?
+					}
+				},
+				abi::Repr::AsInteger => {
+					let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
+					let alloca = self.build_alloca_at_top_of_bb(arg_abi_ty, "fn.arg.asinteger")?;
+					self.builder().build_store(alloca, arg)?;
+
+					if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
+						alloca.into()
+					} else {
+						self.builder().build_load(arg_ty_llvm, alloca, "")?
+					}
+				},
+			};
+			self.cur_fn_args.push(arg);
+		}
+
 		self.lower_body(body, block, body.main_body);
 		self.cur_fn = None;
 
@@ -1634,6 +1714,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		if let Some(di) = self.di_gen.as_mut() {
 			di.di_lexical_block_stack.pop();
 		}
+		Ok(())
 	}
 }
 
@@ -1688,10 +1769,9 @@ pub struct Lowerer<'ctx> {
 	attributes: LlvmAttributes,
 	intrins: LlvmIntrins,
 	di: Option<DebugInfoCtx<'ctx>>,
-	winapi_callconv: llvm_sys::LLVMCallConv,
 }
 impl<'ctx> Lowerer<'ctx> {
-	fn type_is_by_ref(
+	fn vif_abi_type_is_by_ref(
 		&self,
 		ty: value::Index,
 	) -> bool {
@@ -1719,10 +1799,13 @@ impl<'ctx> Lowerer<'ctx> {
 		callconv: CallingConvention,
 	) -> llvm_sys::LLVMCallConv {
 		match callconv {
+			CallingConvention::Vif => llvm_sys::LLVMCallConv::LLVMFastCallConv,
 			CallingConvention::C => llvm_sys::LLVMCallConv::LLVMCCallConv,
 			CallingConvention::Fast => llvm_sys::LLVMCallConv::LLVMFastCallConv,
 			CallingConvention::Cold => llvm_sys::LLVMCallConv::LLVMColdCallConv,
-			CallingConvention::Winapi => self.winapi_callconv,
+			CallingConvention::X86_64Windows => llvm_sys::LLVMCallConv::LLVMWin64CallConv,
+
+			CallingConvention::Count => unreachable!(),
 		}
 	}
 
@@ -1807,12 +1890,6 @@ impl<'ctx> Lowerer<'ctx> {
 			None
 		};
 
-		let winapi_callconv = if compilation_unit.resolved_target.winapi_uses_stdcall {
-			llvm_sys::LLVMCallConv::LLVMX86StdcallCallConv
-		} else {
-			llvm_sys::LLVMCallConv::LLVMCCallConv
-		};
-
 		Self {
 			compilation_unit,
 			ctx,
@@ -1825,7 +1902,6 @@ impl<'ctx> Lowerer<'ctx> {
 			attributes: LlvmAttributes::new(ctx),
 			intrins: LlvmIntrins::new(ctx),
 			di,
-			winapi_callconv,
 		}
 	}
 
@@ -1850,7 +1926,7 @@ impl<'ctx> Lowerer<'ctx> {
 		}
 
 		let ty = self.compilation_unit.values.type_of_interned(val);
-		let value = if self.type_is_by_ref(ty) {
+		let value = if self.vif_abi_type_is_by_ref(ty) {
 			self.lower_interned_value_in_const_storage(val).as_any_value_enum()
 		} else {
 			self.lower_interned_value_as_llvm_value(val)
@@ -1940,7 +2016,7 @@ impl<'ctx> Lowerer<'ctx> {
 						value.as_any_value_enum()
 					},
 					(value::Key::TypeArray(array), _) => {
-						if self.type_is_by_ref(array.elem_ty) {
+						if self.vif_abi_type_is_by_ref(array.elem_ty) {
 							let fields = values.iter().map(BasicValueEnum::get_type).collect::<Vec<_>>();
 							self.ctx.struct_type(&fields, false).const_named_struct(&values).as_any_value_enum()
 						} else {
@@ -2081,19 +2157,49 @@ impl<'ctx> Lowerer<'ctx> {
 				},
 				(value::Key::TypeFn(_), _) => {
 					let fn_ty = self.compilation_unit.values.index_to_key(index).as_type_fn();
-					let abi = abi::compute_fn_abi(self, fn_ty);
-					match abi.ret_ty {
-						AnyTypeEnum::IntType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::ArrayType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::FloatType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::ScalableVectorType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::PointerType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::VoidType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::StructType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::VectorType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-						AnyTypeEnum::FunctionType(t) => t,
+					let (ret_ty, sret) = {
+						let ret_repr = self.compute_fn_ret_ty_abi_repr(fn_ty);
+						let ret_ty = match ret_repr {
+							abi::Repr::ByValue => self.lower_type(fn_ty.ret_ty),
+							abi::Repr::ByRef => self.ctx.void_type().into(),
+							abi::Repr::AsInteger => {
+								let layout = self
+									.compilation_unit
+									.values
+									.type_layout(&self.compilation_unit.resolved_target, fn_ty.ret_ty);
+								self.ctx.custom_width_int_type((layout.size * 8) as _).into()
+							},
+						};
+						(ret_ty, ret_repr == abi::Repr::ByRef)
+					};
+
+					let mut params = Vec::<BasicMetadataTypeEnum>::with_capacity(if sret { 1 } else { 0 } + fn_ty.params.len());
+					if sret {
+						params.push(self.ctx.ptr_type(AddressSpace::default()).into());
 					}
-					.as_any_type_enum()
+
+					for (_, &param_ty) in fn_ty.params.iter().enumerate().filter(|&(i, _)| !fn_ty.comptime_params[i]) {
+						let param = match self.compute_fn_param_abi_repr(fn_ty, param_ty) {
+							abi::Repr::ByValue => self.lower_type(param_ty).try_into().unwrap(),
+							abi::Repr::ByRef => self.ctx.ptr_type(AddressSpace::default()).into(),
+							abi::Repr::AsInteger => {
+								let layout = self
+									.compilation_unit
+									.values
+									.type_layout(&self.compilation_unit.resolved_target, param_ty);
+								self.ctx.custom_width_int_type((layout.size * 8) as _).into()
+							},
+						};
+						params.push(param);
+					}
+
+					// TODO(zino): i don't like this
+					if let Ok(ret_ty) = <AnyTypeEnum as TryInto<BasicTypeEnum>>::try_into(ret_ty) {
+						ret_ty.fn_type(&params, fn_ty.var_args).as_any_type_enum()
+					} else {
+						let ret_ty = ret_ty.into_void_type();
+						ret_ty.fn_type(&params, fn_ty.var_args).as_any_type_enum()
+					}
 				},
 				_ => unreachable!(
 					"cannot lower type {:?}, is a comptime type",
@@ -2123,18 +2229,7 @@ impl<'ctx> Lowerer<'ctx> {
 		});
 
 		let fn_ty = self.compilation_unit.values.index_to_key(fn_ty_idx).as_type_fn();
-		let abi = abi::compute_fn_abi(self, fn_ty);
-		let ty = match abi.ret_ty {
-			inkwell::types::AnyTypeEnum::IntType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::ArrayType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::FloatType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::ScalableVectorType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::FunctionType(t) => t,
-			inkwell::types::AnyTypeEnum::PointerType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::VoidType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::StructType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-			inkwell::types::AnyTypeEnum::VectorType(t) => t.fn_type(&abi.params, fn_ty.var_args),
-		};
+		let ty = self.lower_type(fn_ty_idx).into_function_type();
 
 		// TODO(zino): handle extern declarations more explicitly.
 		let is_main = &*name == "main";
@@ -2172,15 +2267,37 @@ impl<'ctx> Lowerer<'ctx> {
 			)
 		};
 
-		if let Some(callconv) = fn_ty.callconv {
-			llvm_fn_value.set_call_conventions(self.llvm_callconv_id(callconv) as u32);
-		}
+		llvm_fn_value.set_call_conventions(self.llvm_callconv_id(fn_ty.callconv) as u32);
 
 		// attributes
-		if let abi::RetMode::SretFirstParam(ret_ty) = abi.ret_mode {
-			let sret_attr = self.ctx.create_type_attribute(self.attributes.sret.get_enum_kind_id(), ret_ty);
-			llvm_fn_value.add_attribute(AttributeLoc::Param(0), sret_attr);
+
+		// fn ret attrs
+		let ret_ty = self.lower_type(fn_ty.ret_ty);
+		let sret = self.fn_use_sret(fn_ty);
+		if sret {
+			llvm_fn_value.add_attribute(AttributeLoc::Param(0), self.attributes.sret);
+			llvm_fn_value.add_attribute(AttributeLoc::Param(0), self.attributes.noalias);
+			llvm_fn_value.add_attribute(AttributeLoc::Param(0), self.attributes.nonnull);
 		}
+
+		// params attrs
+		for (i, &param_ty) in fn_ty.params.iter().enumerate().filter(|&(i, _)| !fn_ty.comptime_params[i]) {
+			let llvm_param_idx = if sret { 1 } else { 0 } + i as u32;
+			match self.compute_fn_param_abi_repr(fn_ty, param_ty) {
+				abi::Repr::ByRef => {
+					let param_ty_llvm = self.lower_type(param_ty);
+					let byval_attr = self
+						.ctx
+						.create_type_attribute(self.attributes.byval.get_enum_kind_id(), param_ty_llvm);
+					llvm_fn_value.add_attribute(AttributeLoc::Param(llvm_param_idx), byval_attr);
+					llvm_fn_value.add_attribute(AttributeLoc::Param(llvm_param_idx), self.attributes.noalias);
+					llvm_fn_value.add_attribute(AttributeLoc::Param(llvm_param_idx), self.attributes.nonnull);
+				},
+				abi::Repr::ByValue | abi::Repr::AsInteger => {},
+			}
+		}
+
+		// fn attrs
 		llvm_fn_value.add_attribute(AttributeLoc::Function, self.attributes.nounwind);
 		if fn_ty.ret_ty == self.compilation_unit.values.common.never_t {
 			llvm_fn_value.add_attribute(AttributeLoc::Function, self.attributes.noreturn);
@@ -2220,18 +2337,18 @@ impl<'ctx> Lowerer<'ctx> {
 			module,
 			vtir_inst_to_llvm_value: Default::default(),
 			cur_fn: None,
-			cur_fn_abi: None,
-			cur_fn_param_idx: 0,
-			cur_fn_runtime_param_idx: 0,
+			cur_llvm_fn_param_idx: 0,
 			di_gen: di.map(|di| DebugInfoGen {
 				di_file: di.module_to_file[&module],
 				di_ctx: di,
 				di_lexical_block_stack: vec![],
 			}),
 			vtir_block_to_break_list: Default::default(),
+			cur_fn_ty: self.compilation_unit.values.common.void_t,
+			cur_fn_args: Vec::default(),
 			lowerer: self,
 		};
-		fn_lower_ctx.lower_fn_body(fun, vtir);
+		fn_lower_ctx.lower_fn_body(fun, vtir).unwrap();
 
 		self.di = fn_lower_ctx.di_gen.map(|di| di.di_ctx);
 	}
@@ -2373,6 +2490,54 @@ impl<'ctx> Lowerer<'ctx> {
 		}
 
 		Ok(self.target_machine.write_to_memory_buffer(&self.module, FileType::Object).unwrap())
+	}
+
+	fn compute_fn_param_abi_repr(
+		&self,
+		fn_ty: &value::TypeFn,
+		param_ty: value::Index,
+	) -> abi::Repr {
+		match fn_ty.callconv {
+			// TODO(zino): cold, fast
+			CallingConvention::Vif | CallingConvention::Cold | CallingConvention::Fast => {
+				if self.vif_abi_type_is_by_ref(param_ty) {
+					abi::Repr::ByRef
+				} else {
+					abi::Repr::ByValue
+				}
+			},
+			CallingConvention::C | CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, param_ty),
+
+			CallingConvention::Count => unreachable!(),
+		}
+	}
+
+	fn compute_fn_ret_ty_abi_repr(
+		&self,
+		fn_ty: &value::TypeFn,
+	) -> abi::Repr {
+		match fn_ty.callconv {
+			// TODO(zino): cold, fast
+			CallingConvention::Vif | CallingConvention::Cold | CallingConvention::Fast => {
+				if self.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
+					abi::Repr::ByRef
+				} else {
+					abi::Repr::ByValue
+				}
+			},
+			CallingConvention::C | CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, fn_ty.ret_ty),
+			CallingConvention::Cold | CallingConvention::Fast => todo!(),
+
+			CallingConvention::Count => unreachable!(),
+		}
+	}
+
+	fn fn_use_sret(
+		&self,
+		fn_ty: &value::TypeFn,
+	) -> bool {
+		// TODO(zino): instead of the underlying type check we should have a fn that checks a type has a repr
+		fn_ty.ret_ty != self.compilation_unit.values.common.void_t && matches!(self.compute_fn_ret_ty_abi_repr(fn_ty), abi::Repr::ByRef)
 	}
 }
 

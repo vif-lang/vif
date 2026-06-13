@@ -5,7 +5,7 @@ const root = @import("root")
 
 // The actual main function called by the OS.
 // Signature must be synchronized with the compiler and tests.
-fn main(argc: i32, argv: *const *const u8) i32 {
+fn main(argc: i32, argv: *const *const u8) #callconv(.c) i32 {
 	root.main()
 	return 0
 }

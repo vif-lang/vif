@@ -230,6 +230,7 @@ pub struct TypeEnum {
 	pub name: Intern<str>,
 	pub tag_ty: Index,
 	pub fields: &'static [EnumField],
+	pub namespace: NamespaceId,
 	pub linear: bool,
 }
 impl TypeEnum {
@@ -292,47 +293,21 @@ pub struct TypeFn {
 	pub var_args: bool,
 	pub ret_ty: Index,
 	pub external: bool,
-	pub callconv: Option<CallingConvention>,
+	pub callconv: CallingConvention,
 	pub inline: ast::Inline,
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+/// Calling conventions, should be in sync with builtin.vif
 pub enum CallingConvention {
+	Vif,
 	C,
 	Fast,
 	Cold,
-	Winapi,
-}
+	X86_64Windows,
 
-impl CallingConvention {
-	pub fn from_name(name: &str) -> Option<Self> {
-		if name.eq_ignore_ascii_case("c") {
-			Some(Self::C)
-		} else if name.eq_ignore_ascii_case("fast") {
-			Some(Self::Fast)
-		} else if name.eq_ignore_ascii_case("cold") {
-			Some(Self::Cold)
-		} else if name.eq_ignore_ascii_case("winapi") {
-			Some(Self::Winapi)
-		} else {
-			None
-		}
-	}
-}
-
-impl core::fmt::Display for CallingConvention {
-	fn fmt(
-		&self,
-		f: &mut core::fmt::Formatter<'_>,
-	) -> core::fmt::Result {
-		f.write_str(match self {
-			Self::C => "c",
-			Self::Fast => "fast",
-			Self::Cold => "cold",
-			Self::Winapi => "winapi",
-		})
-	}
+	Count,
 }
 
 /// A concrete function value with resolved generic arguments
@@ -1411,6 +1386,7 @@ impl ValueStore {
 				// TODO(zino): this can become a bottleneck, we could cache it in the union
 				self.type_union_layout(target, ty).union_layout
 			},
+			(Key::TypeVoid, _) => Layout { size: 0, align: 0 },
 			(key, _) => unreachable!("{key:?}"),
 		}
 	}
