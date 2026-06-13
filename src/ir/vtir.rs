@@ -66,7 +66,7 @@ impl Vtir {
 			) -> std::io::Result<()> {
 				for inst in body {
 					self.print_indent()?;
-					self.print_inst_ref(inst)?;
+					self.print_inst_ref(*inst)?;
 					writeln!(self.stream)?;
 				}
 				Ok(())
@@ -74,7 +74,7 @@ impl Vtir {
 
 			fn print_inst_ref(
 				&mut self,
-				r: &InstructionRef,
+				r: InstructionRef,
 			) -> std::io::Result<()> {
 				match r {
 					InstructionRef::Instruction(id) => self.print_inst(id),
@@ -84,7 +84,7 @@ impl Vtir {
 
 			fn print_inst(
 				&mut self,
-				id: &InstructionId,
+				id: InstructionId,
 			) -> std::io::Result<()> {
 				write!(self.stream, "{id} = ")?;
 				match &self.vtir.instructions[id] {

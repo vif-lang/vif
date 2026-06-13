@@ -59,7 +59,7 @@ impl Vuir {
 		impl<'a> Printer<'a> {
 			fn print_declaration(
 				&mut self,
-				id: &InstructionId,
+				id: InstructionId,
 			) -> std::io::Result<()> {
 				let Opcode::Declaration(decl) = &self.vuir.instructions[id] else {
 					unreachable!()
@@ -82,7 +82,7 @@ impl Vuir {
 			) -> std::io::Result<()> {
 				for inst in body {
 					self.print_indent()?;
-					self.print_inst(inst)?;
+					self.print_inst(*inst)?;
 					writeln!(self.stream)?;
 				}
 				Ok(())
@@ -90,7 +90,7 @@ impl Vuir {
 
 			fn print_inst_ref(
 				&mut self,
-				r: &InstructionRef,
+				r: InstructionRef,
 			) -> std::io::Result<()> {
 				match r {
 					InstructionRef::Instruction(id) => self.print_inst(id),
@@ -100,7 +100,7 @@ impl Vuir {
 
 			fn print_inst(
 				&mut self,
-				id: &InstructionId,
+				id: InstructionId,
 			) -> std::io::Result<()> {
 				write!(self.stream, "{id} = ")?;
 				match &self.vuir.instructions[id] {
@@ -125,11 +125,11 @@ impl Vuir {
 						self.push_indent();
 
 						write!(self.stream, "Func (builtin: {:?}) {{ ret_ty = ", builtin)?;
-						self.print_inst(ret_ty)?;
+						self.print_inst(*ret_ty)?;
 
 						if let Some(callconv) = callconv {
 							writeln!(self.stream, ", callconv= ")?;
-							self.print_inst(callconv)?;
+							self.print_inst(*callconv)?;
 						}
 
 						writeln!(self.stream, ", params = {{")?;
@@ -219,7 +219,7 @@ impl Vuir {
 						}
 						for decl in decls {
 							self.print_indent()?;
-							self.print_declaration(decl)?;
+							self.print_declaration(*decl)?;
 						}
 						writeln!(self.stream, "}}")?;
 
@@ -302,7 +302,7 @@ impl Vuir {
 
 			#[inline(always)]
 			fn pretty_print(mut self) -> std::io::Result<()> {
-				self.print_inst(&InstructionId::FILE_MODULE)
+				self.print_inst(InstructionId::FILE_MODULE)
 			}
 		}
 

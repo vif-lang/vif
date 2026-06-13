@@ -177,15 +177,15 @@ struct BreakList<'ctx> {
 impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 	fn resolve_inst(
 		&mut self,
-		inst: &vtir::InstructionRef,
+		inst: vtir::InstructionRef,
 	) -> AnyValueEnum<'ctx> {
 		match inst {
 			vtir::InstructionRef::Instruction(id) => self
 				.vtir_inst_to_llvm_value
-				.get(id)
+				.get(&id)
 				.copied()
 				.unwrap_or_else(|| panic!("{id} should be lowered")),
-			vtir::InstructionRef::Interned(val) => self.lowerer.lower_interned_value(*val),
+			vtir::InstructionRef::Interned(val) => self.lowerer.lower_interned_value(val),
 		}
 	}
 
@@ -311,7 +311,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		&mut self,
 		vtir: &Vtir,
 		parent_bb: BasicBlock<'ctx>,
-		id: &vtir::InstructionId,
+		id: vtir::InstructionId,
 		inst: &vtir::Opcode,
 	) -> Result<(), BuilderError> {
 		let ctx = self.lowerer.ctx;
@@ -321,7 +321,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			vtir::Opcode::Noop => {},
 			vtir::Opcode::Block { instructions, ret_ty } => {
 				if let Some(phi) = self.lower_block(vtir, parent_bb, id, instructions, *ret_ty)? {
-					self.vtir_inst_to_llvm_value.insert(*id, phi.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, phi.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::Loop { instructions, ret_ty } => {
@@ -329,7 +329,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				self.builder().build_unconditional_branch(loop_bb)?;
 
 				let after_loop_bb = ctx.insert_basic_block_after(parent_bb, "after_loop");
-				self.vtir_block_to_break_list.insert(*id, BreakList {
+				self.vtir_block_to_break_list.insert(id, BreakList {
 					body_bb: Some(loop_bb),
 					after_bb: after_loop_bb,
 					breaks: Vec::new(),
@@ -346,13 +346,13 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					} else {
 						self.lowerer.lower_type(*ret_ty).try_into().unwrap()
 					};
-					let break_list = self.vtir_block_to_break_list.get(id).unwrap();
+					let break_list = self.vtir_block_to_break_list.get(&id).unwrap();
 					if !break_list.breaks.is_empty() {
 						let phi = self.builder().build_phi(ret_ty, "")?;
 						for (break_value, break_bb) in &break_list.breaks {
 							phi.add_incoming(&[(break_value, *break_bb)]);
 						}
-						self.vtir_inst_to_llvm_value.insert(*id, phi.as_any_value_enum());
+						self.vtir_inst_to_llvm_value.insert(id, phi.as_any_value_enum());
 					}
 				}
 			},
@@ -367,7 +367,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let break_list = self.vtir_block_to_break_list.get(block).unwrap();
 					self.builder().build_unconditional_branch(break_list.after_bb)?;
 				} else {
-					let value = self.resolve_inst(value).try_into().unwrap();
+					let value = self.resolve_inst(*value).try_into().unwrap();
 					let insert_block = self.builder().get_insert_block().unwrap();
 					let break_list = self.vtir_block_to_break_list.get_mut(block).unwrap();
 					break_list.breaks.push((value, insert_block));
@@ -379,24 +379,24 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*ptr_ty).as_type_ptr().pointee_ty;
 				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
 				let alloca = self.build_alloca_at_top_of_bb(pointee_ty, "stackalloc")?;
-				self.vtir_inst_to_llvm_value.insert(*id, alloca.into());
+				self.vtir_inst_to_llvm_value.insert(id, alloca.into());
 			},
 			vtir::Opcode::Load { ptr } => {
 				let pointee_ty = {
 					let ptr_ty = vtir.type_of(&self.compilation_unit.values, ptr);
 					self.compilation_unit.values.index_to_key(ptr_ty).as_type_ptr().pointee_ty
 				};
-				let ptr = self.resolve_inst(ptr).into_pointer_value();
+				let ptr = self.resolve_inst(*ptr).into_pointer_value();
 				let val = self.build_load(pointee_ty, ptr)?;
-				self.vtir_inst_to_llvm_value.insert(*id, val);
+				self.vtir_inst_to_llvm_value.insert(id, val);
 			},
 			vtir::Opcode::Store { src, dst } => {
 				let src_ty = vtir.type_of(&self.compilation_unit.values, src);
 				let dst_ptr_ty = vtir.type_of(&self.compilation_unit.values, dst);
 				let dst_ptr_ty = self.compilation_unit.values.index_to_key(dst_ptr_ty).as_type_ptr();
 
-				let src: BasicValueEnum = self.resolve_inst(src).try_into().unwrap();
-				let dst = self.resolve_inst(dst).into_pointer_value();
+				let src: BasicValueEnum = self.resolve_inst(*src).try_into().unwrap();
+				let dst = self.resolve_inst(*dst).into_pointer_value();
 
 				// if the ptr points to a bit, properly setup the src value
 				let src = if let Some(packed) = &dst_ptr_ty.packed {
@@ -461,7 +461,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let fun = self.cur_fn.unwrap();
 				let arg: BasicValueEnum = self.cur_fn_args[self.cur_llvm_fn_param_idx as usize];
 				self.cur_llvm_fn_param_idx += 1;
-				self.vtir_inst_to_llvm_value.insert(*id, arg.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, arg.as_any_value_enum());
 			},
 			vtir::Opcode::Return { value } => {
 				let fn_ty = self.lowerer.compilation_unit.values.index_to_key(self.cur_fn_ty).as_type_fn();
@@ -472,7 +472,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
 					{
 						let value_ty = vtir.type_of(&self.compilation_unit.values, value);
-						let value = self.resolve_inst(value);
+						let value = self.resolve_inst(*value);
 						self.build_store(value_ty, ret_ptr.into_pointer_value(), value)?;
 					}
 					self.builder().build_return(None)?;
@@ -481,7 +481,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
 					{
 						let value_ty = vtir.type_of(&self.compilation_unit.values, value);
-						let value = self.resolve_inst(value);
+						let value = self.resolve_inst(*value);
 						let value: BasicValueEnum = value.try_into().unwrap();
 
 						let value = match ret_repr {
@@ -542,7 +542,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					for (i, arg) in args.iter().enumerate() {
 						let arg_ty = vtir.type_of(&self.compilation_unit.values, arg);
 						let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type(arg_ty).try_into().unwrap();
-						let arg: BasicValueEnum = self.resolve_inst(arg).try_into().unwrap();
+						let arg: BasicValueEnum = self.resolve_inst(*arg).try_into().unwrap();
 						// convert from vif abi to fn abi
 						let val = match self.lowerer.compute_fn_param_abi_repr(fn_ty, arg_ty) {
 							abi::Repr::ByValue => {
@@ -581,7 +581,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					(values, ret_ptr)
 				};
 
-				let callee = self.resolve_inst(callee);
+				let callee = self.resolve_inst(*callee);
 				let val = match callee {
 					AnyValueEnum::FunctionValue(callee_fn) => self.builder().build_direct_call(callee_fn, &args, "")?,
 					AnyValueEnum::PointerValue(fn_ptr) => self.builder().build_indirect_call(llvm_fn_ty, fn_ptr, &args, "")?,
@@ -624,34 +624,34 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					}
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val);
+				self.vtir_inst_to_llvm_value.insert(id, val);
 			},
 			// unary
 			vtir::Opcode::BoolNot { op } => {
-				let op = self.resolve_inst(op).into_int_value();
+				let op = self.resolve_inst(*op).into_int_value();
 				let val = self.builder().build_not(op, "bool.not")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			// arithmtics
 			vtir::Opcode::Add { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				if lhs.get_type().is_int_type() {
 					let val = self.builder().build_int_add(lhs.into_int_value(), rhs.into_int_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_add(lhs.into_float_value(), rhs.into_float_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::AddSat { lhs, rhs } => {
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let add_sat_intrinsic = intrinsics::Intrinsic::find(if signed { "llvm.sadd.sat" } else { "llvm.uadd.sat" }).unwrap();
 
@@ -664,27 +664,27 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				let val = self.builder().build_call(add_sat_fn, &[lhs_int.into(), rhs_int.into()], "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Sub { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				if lhs.get_type().is_int_type() {
 					let val = self.builder().build_int_sub(lhs.into_int_value(), rhs.into_int_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_sub(lhs.into_float_value(), rhs.into_float_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::SubSat { lhs, rhs } => {
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let sub_sat_intrinsic = intrinsics::Intrinsic::find(if signed { "llvm.ssub.sat" } else { "llvm.usub.sat" }).unwrap();
 
@@ -697,27 +697,27 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				let value = self.builder().build_call(sub_sat_fn, &[lhs_int.into(), rhs_int.into()], "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, value.as_any_value_enum());
 			},
 			vtir::Opcode::Mul { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				if lhs.get_type().is_int_type() {
 					let val = self.builder().build_int_mul(lhs.into_int_value(), rhs.into_int_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_mul(lhs.into_float_value(), rhs.into_float_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::MulSat { lhs, rhs } => {
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let mul_sat_intrinsic = intrinsics::Intrinsic::find(if signed { "llvm.smul.sat" } else { "llvm.umul.sat" }).unwrap();
 
 				let lhs_int = lhs.into_int_value();
@@ -729,12 +729,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 				let val = self.builder().build_call(mul_sat_fn, &[lhs_int.into(), rhs_int.into()], "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Div { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -745,17 +745,17 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.builder()
 							.build_int_unsigned_div(lhs.into_int_value(), rhs.into_int_value(), "")?
 					};
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_div(lhs.into_float_value(), rhs.into_float_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::Rem { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -767,17 +767,17 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.builder()
 							.build_int_unsigned_rem(lhs.into_int_value(), rhs.into_int_value(), "")?
 					};
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				} else {
 					assert!(lhs.get_type().is_float_type());
 					let val = self.builder().build_float_rem(lhs.into_float_value(), rhs.into_float_value(), "")?;
-					self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::Lt { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -795,12 +795,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						.build_float_compare(inkwell::FloatPredicate::OLT, lhs.into_float_value(), rhs.into_float_value(), "")?
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Lte { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -817,12 +817,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						.build_float_compare(inkwell::FloatPredicate::OLE, lhs.into_float_value(), rhs.into_float_value(), "")?
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Gt { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -839,12 +839,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						.build_float_compare(inkwell::FloatPredicate::OGT, lhs.into_float_value(), rhs.into_float_value(), "")?
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Gte { lhs, rhs } => {
 				let ty = vtir.type_of(&self.compilation_unit.values, lhs);
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					let signed = self.compilation_unit.values.type_is_int_signed(ty);
@@ -861,37 +861,37 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						.build_float_compare(inkwell::FloatPredicate::OGE, lhs.into_float_value(), rhs.into_float_value(), "")?
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BoolAnd { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = self.builder().build_and(lhs.into_int_value(), rhs.into_int_value(), "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BoolOr { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = self.builder().build_or(lhs.into_int_value(), rhs.into_int_value(), "")?;
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			// bitwise
 			vtir::Opcode::Shl { lhs, rhs } | vtir::Opcode::ShlWrap { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self.builder().build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::ShlSat { lhs, rhs } => {
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let shl_sat_intrinsic = intrinsics::Intrinsic::find(if signed { "llvm.sshl.sat" } else { "llvm.ushl.sat" }).unwrap();
 				let lhs_int = lhs.into_int_value();
 				let rhs_int = rhs.into_int_value();
@@ -900,58 +900,58 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.get_declaration(&self.lowerer.module, &[lhs_llvm_ty.into()])
 					.unwrap();
 				let val = self.builder().build_call(shl_sat_fn, &[lhs_int.into(), rhs_int.into()], "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Shr { lhs, rhs } | vtir::Opcode::ShrWrap { lhs, rhs } => {
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self
 					.builder()
 					.build_right_shift(lhs.into_int_value(), rhs.into_int_value(), signed, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::ShrSat { lhs, rhs } => {
 				// Saturating right shift is the same as regular right shift
 				let lhs_ty = vtir.type_of(&self.compilation_unit.values, lhs);
 				let signed = self.compilation_unit.values.type_is_int_signed(lhs_ty);
 
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self
 					.builder()
 					.build_right_shift(lhs.into_int_value(), rhs.into_int_value(), signed, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BitAnd { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self.builder().build_and(lhs.into_int_value(), rhs.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BitOr { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self.builder().build_or(lhs.into_int_value(), rhs.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BitXor { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 				let val = self.builder().build_xor(lhs.into_int_value(), rhs.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::BitNot { op } => {
-				let op = self.resolve_inst(op);
+				let op = self.resolve_inst(*op);
 				let val = self.builder().build_not(op.into_int_value(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 
 			vtir::Opcode::Eq { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					self.builder()
@@ -966,11 +966,11 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					unreachable!("eq not implemented for {lhs} and {rhs}")
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Neq { lhs, rhs } => {
-				let lhs = self.resolve_inst(lhs);
-				let rhs = self.resolve_inst(rhs);
+				let lhs = self.resolve_inst(*lhs);
+				let rhs = self.resolve_inst(*rhs);
 
 				let val = if lhs.get_type().is_int_type() {
 					self.builder()
@@ -985,7 +985,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					unreachable!()
 				};
 
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 
 			// structs
@@ -1004,7 +1004,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						let field_ty = vtir.type_of(&self.compilation_unit.values, field);
 						let field_ty_int = ctx.custom_width_int_type(self.compilation_unit.values.type_bit_size(field_ty));
 						let struct_int: IntValue = {
-							let field: BasicValueEnum = self.resolve_inst(field).try_into().unwrap();
+							let field: BasicValueEnum = self.resolve_inst(*field).try_into().unwrap();
 							let field = self.builder().build_bit_cast(field, field_ty_int, "")?.into_int_value();
 							let field = self.builder().build_int_z_extend(field, struct_ty_llvm, "")?;
 							let field = self
@@ -1017,7 +1017,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 							struct_int,
 						))
 					})?;
-					self.vtir_inst_to_llvm_value.insert(*id, struct_int.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, struct_int.as_any_value_enum());
 				} else {
 					let struct_ty_llvm = self.lowerer.lower_type(*struct_ty).into_struct_type();
 					let storage = self.build_alloca_at_top_of_bb(struct_ty_llvm.as_basic_type_enum(), "struct.init")?;
@@ -1025,10 +1025,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					for (i, field) in fields.iter().enumerate() {
 						let field_ty = struct_def.fields[i].ty;
 						let field_ptr = self.builder().build_struct_gep(struct_ty_llvm, storage, i as u32, "")?;
-						let field_value = self.resolve_inst(field);
+						let field_value = self.resolve_inst(*field);
 						self.build_store(field_ty, field_ptr, field_value)?;
 					}
-					self.vtir_inst_to_llvm_value.insert(*id, storage.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, storage.as_any_value_enum());
 				}
 			},
 			vtir::Opcode::ArrayInit { array_ty, elements } => {
@@ -1043,10 +1043,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.builder()
 							.build_in_bounds_gep(array_ty, storage, &[self.lowerer.ctx.i32_type().const_zero(), index], "")?
 					};
-					let element = self.resolve_inst(element);
+					let element = self.resolve_inst(*element);
 					self.build_store(elem_ty, elem_ptr, element)?;
 				}
-				self.vtir_inst_to_llvm_value.insert(*id, storage.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, storage.as_any_value_enum());
 			},
 			vtir::Opcode::SliceInit { slice_ty, elements } => {
 				let slice = self.compilation_unit.values.index_to_key(*slice_ty).as_type_slice();
@@ -1073,7 +1073,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 								"",
 							)?
 						};
-						let element = self.resolve_inst(element);
+						let element = self.resolve_inst(*element);
 						self.build_store(slice.pointee_ty, elem_ptr, element)?;
 					}
 
@@ -1090,10 +1090,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let undef = slice_ty_llvm.get_undef();
 				let with_ptr = self.builder().build_insert_value(undef, ptr, 0, "slice.ptr")?;
 				let with_len = self.builder().build_insert_value(with_ptr, len, 1, "slice.len")?;
-				self.vtir_inst_to_llvm_value.insert(*id, with_len.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, with_len.as_any_value_enum());
 			},
 			vtir::Opcode::AnyptrInit { value, value_ty } => {
-				let resolved = self.resolve_inst(value);
+				let resolved = self.resolve_inst(*value);
 				let payload_ty: BasicTypeEnum = self.lowerer.lower_type(*value_ty).try_into().unwrap();
 				let payload_alloca = self.build_alloca_at_top_of_bb(payload_ty, "any.payload")?;
 				self.build_store(*value_ty, payload_alloca, resolved)?;
@@ -1110,7 +1110,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let undef = any_ty.get_undef();
 				let with_ptr = self.builder().build_insert_value(undef, payload_alloca, 0, "any.ptr")?;
 				let with_type_id = self.builder().build_insert_value(with_ptr, type_id, 1, "any.type")?;
-				self.vtir_inst_to_llvm_value.insert(*id, with_type_id.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, with_type_id.as_any_value_enum());
 			},
 			vtir::Opcode::StructFieldValue {
 				struct_ty,
@@ -1131,7 +1131,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					let ty = ty.as_ref();
 					if let value::StructLayout::Packed { packed_fields, .. } = ty.layout {
 						let field_info = &packed_fields[*field_idx];
-						let struct_value = self.resolve_inst(struct_ty).into_int_value();
+						let struct_value = self.resolve_inst(*struct_ty).into_int_value();
 
 						let field = if field_info.offset > 0 {
 							self.builder().build_right_shift(
@@ -1151,16 +1151,16 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 							self.builder().build_int_truncate(field, field_ty_int, "")?
 						};
 
-						self.vtir_inst_to_llvm_value.insert(*id, field.as_any_value_enum());
+						self.vtir_inst_to_llvm_value.insert(id, field.as_any_value_enum());
 					} else {
 						unreachable!()
 					}
 				} else {
 					let struct_llvm_ty = self.lowerer.lower_type(ty).into_struct_type();
-					let struct_ptr = self.resolve_inst(struct_ty).into_pointer_value();
+					let struct_ptr = self.resolve_inst(*struct_ty).into_pointer_value();
 					let field_ptr = self.builder().build_struct_gep(struct_llvm_ty, struct_ptr, *field_idx as u32, "")?;
 					let field = self.build_load(*ret_ty, field_ptr)?;
-					self.vtir_inst_to_llvm_value.insert(*id, field);
+					self.vtir_inst_to_llvm_value.insert(id, field);
 				}
 			},
 			vtir::Opcode::StructFieldPtr {
@@ -1177,7 +1177,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let r#struct = r#struct.as_ref();
 
 				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(struct_ty).try_into().unwrap();
-				let ptr = self.resolve_inst(struct_ptr).into_pointer_value();
+				let ptr = self.resolve_inst(*struct_ptr).into_pointer_value();
 
 				// if the struct is packed, returns directly the ptr to the struct
 				// the offset is encoded into the ret_ty type already so other insts should handle packed structs through that
@@ -1186,7 +1186,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				} else {
 					self.builder().build_struct_gep(pointee_ty, ptr, *field_idx as u32, "")?
 				};
-				self.vtir_inst_to_llvm_value.insert(*id, ptr.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, ptr.as_any_value_enum());
 			},
 
 			// unions
@@ -1196,7 +1196,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				value: payload_value,
 			} => match self.lowerer.lower_union_repr_for_field(*union_ty, (*field_idx).try_into().unwrap()) {
 				UnionRepr::TagOnly(tag) => {
-					self.vtir_inst_to_llvm_value.insert(*id, tag.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, tag.as_any_value_enum());
 				},
 				UnionRepr::Aggregate { ty: view_ty, tag, payload } => {
 					let nominal_ty = self.lowerer.lower_type(*union_ty).into_struct_type();
@@ -1210,7 +1210,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						let payload_ty = self.compilation_unit.values.index_to_value(*union_ty).as_union().fields[*field_idx]
 							.ty
 							.unwrap();
-						let resolved = self.resolve_inst(&payload_value);
+						let resolved = self.resolve_inst(payload_value);
 						self.build_store(payload_ty, payload_ptr, resolved)?;
 					} else {
 						assert!(payload_value.is_none(), "payload-less union field has a value");
@@ -1226,23 +1226,23 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 						self.builder().build_store(tag_ptr, tag)?;
 					}
 
-					self.vtir_inst_to_llvm_value.insert(*id, alloca.as_any_value_enum());
+					self.vtir_inst_to_llvm_value.insert(id, alloca.as_any_value_enum());
 				},
 			},
 			vtir::Opcode::UnionTag { union_val, tag_ty } => {
 				let union_ty = vtir.type_of(&self.compilation_unit.values, union_val);
 				match self.lowerer.lower_union_repr_for_field(union_ty, 0) {
 					UnionRepr::TagOnly(_) => {
-						let tag = self.resolve_inst(union_val);
-						self.vtir_inst_to_llvm_value.insert(*id, tag);
+						let tag = self.resolve_inst(*union_val);
+						self.vtir_inst_to_llvm_value.insert(id, tag);
 					},
 					UnionRepr::Aggregate { tag, .. } => {
 						let (_, tag_field_idx) = tag.expect("UnionTag on bare union");
-						let union_ptr = self.resolve_inst(union_val).into_pointer_value();
+						let union_ptr = self.resolve_inst(*union_val).into_pointer_value();
 						let union_ty_llvm = self.lowerer.lower_type(union_ty).into_struct_type();
 						let tag_ptr = self.builder().build_struct_gep(union_ty_llvm, union_ptr, tag_field_idx, "")?;
 						let tag = self.build_load(*tag_ty, tag_ptr)?;
-						self.vtir_inst_to_llvm_value.insert(*id, tag.as_any_value_enum());
+						self.vtir_inst_to_llvm_value.insert(id, tag.as_any_value_enum());
 					},
 				}
 			},
@@ -1253,7 +1253,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			} => {
 				let union_ty_idx = vtir.type_of(&self.compilation_unit.values, union_val);
 				let union_llvm_ty = self.lowerer.lower_type(union_ty_idx);
-				let union_ptr = self.resolve_inst(union_val).into_pointer_value();
+				let union_ptr = self.resolve_inst(*union_val).into_pointer_value();
 
 				let UnionRepr::Aggregate {
 					payload: Some((payload_field_idx, _)),
@@ -1266,14 +1266,14 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.builder()
 					.build_struct_gep(union_llvm_ty.into_struct_type(), union_ptr, payload_field_idx, "")?;
 				let result = self.build_load(*ret_ty, payload_ptr)?;
-				self.vtir_inst_to_llvm_value.insert(*id, result);
+				self.vtir_inst_to_llvm_value.insert(id, result);
 			},
 
 			// builtins
 			vtir::Opcode::UnsafeIntCast { src, dst_ty } => {
 				let src = {
 					let src_ty = vtir.type_of(&self.compilation_unit.values, src);
-					let src = self.resolve_inst(src);
+					let src = self.resolve_inst(*src);
 					src.into_int_value()
 				};
 				let is_signed = self.compilation_unit.values.type_is_int_signed(*dst_ty);
@@ -1282,23 +1282,23 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let val = self
 					.builder()
 					.build_int_cast_sign_flag(src, dst_ty.into_int_type(), is_signed, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::UnsafeFloatCast { src, dst_ty } => {
 				let src = {
 					let src_ty = vtir.type_of(&self.compilation_unit.values, src);
 					let _src_ty = self.lowerer.lower_type(src_ty);
-					let src = self.resolve_inst(src);
+					let src = self.resolve_inst(*src);
 					src.into_float_value()
 				};
 				let dst_ty = self.lowerer.lower_type(*dst_ty);
 				let val = self.builder().build_float_cast(src, dst_ty.into_float_type(), "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::IntToFloat { src, dst_ty } => {
 				let (src, is_signed) = {
 					let src_ty = vtir.type_of(&self.compilation_unit.values, src);
-					let src = self.resolve_inst(src);
+					let src = self.resolve_inst(*src);
 					let is_signed = self.compilation_unit.values.type_is_int_signed(src_ty);
 					(src.into_int_value(), is_signed)
 				};
@@ -1308,39 +1308,39 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				} else {
 					self.builder().build_unsigned_int_to_float(src, dst_ty.into_float_type(), "")?
 				};
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::SizeOf { of } => {
 				let of = self.lowerer.lower_type(of.as_interned());
 				let val = of.size_of().expect("@size_of called on non-sized type");
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::Zeroed { ty } => {
 				let ty_idx = *ty;
 				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type(ty_idx).try_into().unwrap();
 				let zeroed = self.materialize_nominal_value(ty_idx, ty.const_zero(), "zeroed")?;
-				self.vtir_inst_to_llvm_value.insert(*id, zeroed);
+				self.vtir_inst_to_llvm_value.insert(id, zeroed);
 			},
 			vtir::Opcode::BitCast { src, dst_ty } => {
-				let src: BasicValueEnum = self.resolve_inst(src).try_into().unwrap();
+				let src: BasicValueEnum = self.resolve_inst(*src).try_into().unwrap();
 				let dst_ty: BasicTypeEnum = self.lowerer.lower_type(*dst_ty).try_into().unwrap();
 				let val = self.builder().build_bit_cast(src, dst_ty, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::AnyptrIs { value, target_ty } => {
-				let value = self.resolve_inst(value).into_struct_value();
+				let value = self.resolve_inst(*value).into_struct_value();
 				let runtime_type_id = self.builder().build_extract_value(value, 1, "any.type")?.into_int_value();
 				let target_type_id = runtime_type_id.get_type().const_int((*target_ty).as_u32() as u64, false);
 				let is_target = self
 					.builder()
 					.build_int_compare(inkwell::IntPredicate::EQ, runtime_type_id, target_type_id, "any.is")?;
-				self.vtir_inst_to_llvm_value.insert(*id, is_target.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, is_target.as_any_value_enum());
 			},
 			vtir::Opcode::AnyptrAs { value, target_ty } => {
-				let value = self.resolve_inst(value).into_struct_value();
+				let value = self.resolve_inst(*value).into_struct_value();
 				let payload_ptr = self.builder().build_extract_value(value, 0, "any.ptr")?.into_pointer_value();
 				let loaded = self.build_load(*target_ty, payload_ptr)?;
-				self.vtir_inst_to_llvm_value.insert(*id, loaded);
+				self.vtir_inst_to_llvm_value.insert(id, loaded);
 			},
 			vtir::Opcode::Undefined { ty } => {
 				let ty_idx = *ty;
@@ -1356,45 +1356,45 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					BasicTypeEnum::ScalableVectorType(svec_ty) => svec_ty.get_undef().as_any_value_enum(),
 				};
 				let undef_value = self.materialize_nominal_value(ty_idx, undef_value.try_into().unwrap(), "undefined")?;
-				self.vtir_inst_to_llvm_value.insert(*id, undef_value);
+				self.vtir_inst_to_llvm_value.insert(id, undef_value);
 			},
 			vtir::Opcode::SliceFromRawParts { slice_ty, ptr, len } => {
 				let slice_ty = self.lowerer.lower_type(*slice_ty).into_struct_type();
-				let ptr: BasicValueEnum = self.resolve_inst(ptr).try_into().unwrap();
-				let len: BasicValueEnum = self.resolve_inst(len).try_into().unwrap();
+				let ptr: BasicValueEnum = self.resolve_inst(*ptr).try_into().unwrap();
+				let len: BasicValueEnum = self.resolve_inst(*len).try_into().unwrap();
 				let undef = slice_ty.get_undef();
 				let with_ptr = self.builder().build_insert_value(undef, ptr, 0, "slice.ptr").unwrap();
 				let with_len = self.builder().build_insert_value(with_ptr, len, 1, "slice.len").unwrap();
-				self.vtir_inst_to_llvm_value.insert(*id, with_len.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, with_len.as_any_value_enum());
 			},
 			vtir::Opcode::SlicePtr { slice, ptr_ty } => {
-				let slice = self.resolve_inst(slice).into_struct_value();
+				let slice = self.resolve_inst(*slice).into_struct_value();
 				let ptr = self.builder().build_extract_value(slice, 0, "slice.ptr").unwrap();
-				self.vtir_inst_to_llvm_value.insert(*id, ptr.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, ptr.as_any_value_enum());
 			},
 			vtir::Opcode::SliceLen { slice } => {
-				let slice = self.resolve_inst(slice).into_struct_value();
+				let slice = self.resolve_inst(*slice).into_struct_value();
 				let len = self.builder().build_extract_value(slice, 1, "slice.len").unwrap();
-				self.vtir_inst_to_llvm_value.insert(*id, len.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, len.as_any_value_enum());
 			},
 			vtir::Opcode::PtrToInt { src, dst_ty } => {
-				let src = self.resolve_inst(src).into_pointer_value();
+				let src = self.resolve_inst(*src).into_pointer_value();
 				let dst_ty = self.lowerer.lower_type(*dst_ty).into_int_type();
 				let val = self.builder().build_ptr_to_int(src, dst_ty, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::IntToPtr { src, dst_ty } => {
-				let src = self.resolve_inst(src).into_int_value();
+				let src = self.resolve_inst(*src).into_int_value();
 				let dst_ty = self.lowerer.lower_type(*dst_ty).into_pointer_type();
 				let val = self.builder().build_int_to_ptr(src, dst_ty, "")?;
-				self.vtir_inst_to_llvm_value.insert(*id, val.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
 			vtir::Opcode::SliceCopyNonoverlapping { slice_ty, src, dst } => {
 				let src_pointee_ty = self.compilation_unit.values.index_to_key(*slice_ty).as_type_slice().pointee_ty;
 				let src_pointee_ty = self.lowerer.lower_type(src_pointee_ty);
 
-				let src = self.resolve_inst(src).into_struct_value();
-				let dst = self.resolve_inst(dst).into_struct_value();
+				let src = self.resolve_inst(*src).into_struct_value();
+				let dst = self.resolve_inst(*dst).into_struct_value();
 				let src_ptr = self.builder().build_extract_value(src, 0, "slice.ptr")?.into_pointer_value();
 				let src_len = self.builder().build_extract_value(src, 1, "slice.len").unwrap().into_int_value();
 				let src_len_in_bytes = self
@@ -1402,26 +1402,26 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.build_int_mul(src_len, src_pointee_ty.size_of().unwrap(), "src_len_in_bytes")?;
 				let dst_ptr = self.builder().build_extract_value(dst, 0, "slice.ptr")?.into_pointer_value();
 				let value = self.builder().build_memcpy(dst_ptr, 4, src_ptr, 4, src_len_in_bytes).unwrap();
-				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, value.as_any_value_enum());
 			},
 			vtir::Opcode::SliceElemPtr { slice, index, elem_ptr_ty } => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*elem_ptr_ty).as_type_ptr().pointee_ty;
 				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
 
-				let src = self.resolve_inst(slice).into_struct_value();
+				let src = self.resolve_inst(*slice).into_struct_value();
 				let src_ptr = self
 					.builder()
 					.build_extract_value(src, 0, "slice.ptr")
 					.unwrap()
 					.into_pointer_value();
-				let index = self.resolve_inst(index).into_int_value();
+				let index = self.resolve_inst(*index).into_int_value();
 				// SAFETY: The VTIR slice value carries a pointer to elements of `pointee_ty`,
 				// and `index` is the computed element offset for this instruction.
 				let value = unsafe {
 					self.builder()
 						.build_in_bounds_gep(pointee_ty, src_ptr, &[index], "slice.elem.ptr")?
 				};
-				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, value.as_any_value_enum());
 			},
 			vtir::Opcode::PtrElemPtr {
 				array_ptr,
@@ -1430,15 +1430,15 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			} => {
 				let pointee_ty = self.compilation_unit.values.index_to_key(*elem_ptr_ty).as_type_ptr().pointee_ty;
 				let pointee_ty: BasicTypeEnum = self.lowerer.lower_type(pointee_ty).try_into().unwrap();
-				let array_ptr = self.resolve_inst(array_ptr).into_pointer_value();
-				let index = self.resolve_inst(index).into_int_value();
+				let array_ptr = self.resolve_inst(*array_ptr).into_pointer_value();
+				let index = self.resolve_inst(*index).into_int_value();
 				// SAFETY: The pointer operand is typed as pointing at `pointee_ty`, and
 				// `index` is the computed element offset for this instruction.
 				let value = unsafe {
 					self.builder()
 						.build_in_bounds_gep(pointee_ty, array_ptr, &[index], "ptr.array.elem.ptr")?
 				};
-				self.vtir_inst_to_llvm_value.insert(*id, value.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, value.as_any_value_enum());
 			},
 
 			vtir::Opcode::DbgSrcLoc { line, col } => {
@@ -1462,7 +1462,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let then_block = ctx.insert_basic_block_after(insert_bb, "then");
 				let else_block = ctx.insert_basic_block_after(then_block, "else");
 
-				let cond = self.resolve_inst(cond).into_int_value();
+				let cond = self.resolve_inst(*cond).into_int_value();
 				let branch = self.builder().build_conditional_branch(cond, then_block, else_block)?;
 
 				// then
@@ -1473,11 +1473,11 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				self.builder().position_at_end(else_block);
 				self.lower_body(vtir, else_block, else_body);
 
-				self.vtir_inst_to_llvm_value.insert(*id, branch.as_any_value_enum());
+				self.vtir_inst_to_llvm_value.insert(id, branch.as_any_value_enum());
 			},
 			vtir::Opcode::Switch { operand, cases, else_body } => {
 				let insert_bb = self.builder().get_insert_block().unwrap();
-				let operand_val = self.resolve_inst(operand).into_int_value();
+				let operand_val = self.resolve_inst(*operand).into_int_value();
 
 				// Create basic blocks: one per case body + else
 				let else_bb = ctx.insert_basic_block_after(insert_bb, "switch_else");
@@ -1493,7 +1493,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let mut switch_cases = Vec::new();
 				for (i, case) in cases.iter().enumerate() {
 					for item in case.items.iter() {
-						let item_val = self.resolve_inst(item).into_int_value();
+						let item_val = self.resolve_inst(*item).into_int_value();
 						switch_cases.push((item_val, case_bbs[i]));
 					}
 				}
@@ -1549,7 +1549,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		for inst in insts.iter() {
 			let id = inst.as_id().unwrap();
 			let inst = &vtir.instructions[id];
-			self.lower_body_inst(vtir, parent_bb, &id, inst).unwrap();
+			self.lower_body_inst(vtir, parent_bb, id, inst).unwrap();
 		}
 	}
 
@@ -1557,12 +1557,12 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 		&mut self,
 		vtir: &Vtir,
 		parent_bb: BasicBlock<'ctx>,
-		id: &vtir::InstructionId,
+		id: vtir::InstructionId,
 		instructions: &[vtir::InstructionRef],
 		ret_ty: value::Index,
 	) -> Result<Option<PhiValue<'ctx>>, BuilderError> {
 		let after_block_bb = self.lowerer.ctx.insert_basic_block_after(parent_bb, "after_block");
-		self.vtir_block_to_break_list.insert(*id, BreakList {
+		self.vtir_block_to_break_list.insert(id, BreakList {
 			body_bb: None,
 			after_bb: after_block_bb,
 			breaks: Vec::new(),
@@ -1583,7 +1583,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			} else {
 				self.lowerer.lower_type(ret_ty).try_into().unwrap()
 			};
-			let break_list = self.vtir_block_to_break_list.get(id).unwrap();
+			let break_list = self.vtir_block_to_break_list.get(&id).unwrap();
 			if !break_list.breaks.is_empty() {
 				let phi = self.builder().build_phi(ret_ty, "")?;
 				for (break_value, break_bb) in &break_list.breaks {
@@ -1610,14 +1610,14 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 
 		if fn_ty.external {
 			let fn_value = self
-				.resolve_inst(&InstructionRef::Interned(interned_fn_value))
+				.resolve_inst(InstructionRef::Interned(interned_fn_value))
 				.into_function_value();
 			fn_value.set_linkage(Linkage::External);
 			return Ok(());
 		}
 
 		let fn_value = self
-			.resolve_inst(&InstructionRef::Interned(interned_fn_value))
+			.resolve_inst(InstructionRef::Interned(interned_fn_value))
 			.into_function_value();
 		let block = self.lowerer.ctx.append_basic_block(fn_value, "entry");
 		self.builder().position_at_end(block);

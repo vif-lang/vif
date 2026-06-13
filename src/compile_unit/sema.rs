@@ -770,8 +770,8 @@ impl<'a> Sema<'a> {
 				// ensure return type can be coerced to tag
 				self.coerce(
 					block,
-					&type_enum.tag_ty,
-					&vtir::InstructionRef::Interned(fun_ty.ret_ty),
+					type_enum.tag_ty,
+					vtir::InstructionRef::Interned(fun_ty.ret_ty),
 					&caller_span.span,
 				)?;
 
@@ -1096,12 +1096,12 @@ impl<'a> Sema<'a> {
 	/// Returns Err if the value has already been consumed (use-after-move).
 	fn try_consume_linear_value(
 		&mut self,
-		value: &vtir::InstructionRef,
+		value: vtir::InstructionRef,
 		span: &Span,
 	) -> Result<(), AnalyzeError> {
-		let ty = self.type_of(value);
+		let ty = self.type_of(&value);
 		if self.cu.values.type_is_linear(ty)
-			&& let Some(slot) = self.linear_slots.get(value)
+			&& let Some(slot) = self.linear_slots.get(&value)
 		{
 			if slot.consumed {
 				let name = slot.name;
@@ -1125,7 +1125,7 @@ impl<'a> Sema<'a> {
 				self.push_error(diag);
 				return Err(AnalyzeError::AnalysisFailed);
 			}
-			let slot = self.linear_slots.get_mut(value).unwrap();
+			let slot = self.linear_slots.get_mut(&value).unwrap();
 			slot.consumed = true;
 			slot.consumed_at = Some(*span);
 		}
@@ -1471,7 +1471,7 @@ impl<'a> Sema<'a> {
 							.value
 							.map(|(value, value_span)| {
 								let value = self.resolve_inst(&value);
-								let value = self.coerce(*block, &tag_ty, &value, &value_span)?;
+								let value = self.coerce(*block, tag_ty, value, &value_span)?;
 								let value = self.try_resolve_comptime_value(&value).unwrap();
 								Ok(value)
 							})
@@ -1880,7 +1880,7 @@ impl<'a> Sema<'a> {
 
 				let br_block = self.resolve_inst(&br_block.as_ref()).as_id().unwrap();
 
-				self.ensure_type_exist_in_runtime(&self.type_of(&value), value_span)?;
+				self.ensure_type_exist_in_runtime(self.type_of(&value), value_span)?;
 
 				let inst = self.inst(block, vtir::Opcode::Break { block: br_block, value });
 				self.vuir_map.insert(id, inst);
@@ -2203,7 +2203,7 @@ impl<'a> Sema<'a> {
 						);
 						return Err(AnalyzeError::AnalysisFailed);
 					}
-					self.ensure_type_exist_in_runtime(&ty, span)?;
+					self.ensure_type_exist_in_runtime(ty, span)?;
 					let ty = self.cu.values.intern_trivial(&value::Key::TypePtr(TypePtr {
 						pointee_ty: ty,
 						packed: None,
@@ -2238,7 +2238,7 @@ impl<'a> Sema<'a> {
 
 				let alloc = if self.try_resolve_comptime_value(&original_alloc).is_some() {
 					let ptr = self.cu.values.index_to_key(original_alloc.as_interned());
-					self.coerce(block, &alloc_ptr_const_ty, &original_alloc, span)?
+					self.coerce(block, alloc_ptr_const_ty, original_alloc, span)?
 				} else {
 					self.inst(block, vtir::Opcode::BitCast {
 						src: original_alloc,
@@ -2262,7 +2262,7 @@ impl<'a> Sema<'a> {
 							ModuleAnalyzeState::Done(v) => v,
 							_ => self.cu.values.common.unreachable_value,
 						});
-						self.diag_decl_not_found(&ident.symbol, &module_value, &ident.span);
+						self.diag_decl_not_found(&ident.symbol, module_value, &ident.span);
 						AnalyzeError::AnalysisFailed
 					})?;
 				let inst = self.analyze_decl_val(block, decl, &ident.span)?;
@@ -2277,7 +2277,7 @@ impl<'a> Sema<'a> {
 							ModuleAnalyzeState::Done(v) => v,
 							_ => self.cu.values.common.unreachable_value,
 						});
-						self.diag_decl_not_found(&ident.symbol, &module_value, &ident.span);
+						self.diag_decl_not_found(&ident.symbol, module_value, &ident.span);
 						AnalyzeError::AnalysisFailed
 					})?;
 				let inst = self.analyze_decl_ptr(block, decl)?;
@@ -2332,12 +2332,12 @@ impl<'a> Sema<'a> {
 						return Err(AnalyzeError::AnalysisFailed);
 					}
 
-					let coerced_src = self.coerce(block, &dst_pointee_ty, &src_ref, span)?;
+					let coerced_src = self.coerce(block, dst_pointee_ty, src_ref, span)?;
 					self.comptime_memory.allocs[comptime_alloc_id].value = ComptimeAllocValue::Interned(coerced_src.as_interned());
 
 					vtir::InstructionRef::Interned(self.cu.values.common.void_t)
 				} else {
-					let coerced_src = self.coerce(block, &dst_pointee_ty, &src_ref, span)?;
+					let coerced_src = self.coerce(block, dst_pointee_ty, src_ref, span)?;
 					self.inst(block, vtir::Opcode::Store {
 						dst: dst_ref,
 						src: coerced_src,
@@ -2501,7 +2501,7 @@ impl<'a> Sema<'a> {
 			vuir::Opcode::Coerce { value, into, span } => {
 				let dst_ty = self.resolve_type(block, into, span)?;
 				let value = self.resolve_inst(value);
-				let value = self.coerce(block, &dst_ty, &value, span)?;
+				let value = self.coerce(block, dst_ty, value, span)?;
 				self.vuir_map.insert(id, value);
 				Ok((value, ControlFlow::May))
 			},
@@ -2581,7 +2581,7 @@ impl<'a> Sema<'a> {
 						let value = self.resolve_inst(&value);
 						let cur_fn = self.cu.values.index_to_key(self.fun.unwrap()).as_fn();
 						let cur_fn_ty = self.cu.values.index_to_key(cur_fn.ty).as_type_fn();
-						let value = self.coerce(block, &cur_fn_ty.ret_ty, &value, span)?;
+						let value = self.coerce(block, cur_fn_ty.ret_ty, value, span)?;
 						Ok(value)
 					})
 					.transpose()?;
@@ -2629,7 +2629,7 @@ impl<'a> Sema<'a> {
 					};
 
 					for break_val in &vuir_block.breaks[1..] {
-						self.coerce(block, &ret_ty, break_val, span)?;
+						self.coerce(block, ret_ty, *break_val, span)?;
 					}
 					ret_ty
 				};
@@ -2651,7 +2651,7 @@ impl<'a> Sema<'a> {
 			// unary
 			vuir::Opcode::BoolNot { op, span } => {
 				let op = self.resolve_inst(op);
-				let op = self.coerce(block, &self.cu.values.common.bool_t, &op, span)?;
+				let op = self.coerce(block, self.cu.values.common.bool_t, op, span)?;
 
 				let inst = if let Some(op) = self.try_resolve_comptime_value(&op) {
 					let value = if op == self.cu.values.common.true_value {
@@ -2828,7 +2828,7 @@ impl<'a> Sema<'a> {
 			} => {
 				let cond = self.resolve_inst(cond);
 				let bool_ty = self.cu.values.common.bool_t;
-				let cond = self.coerce(block, &bool_ty, &cond, cond_span)?;
+				let cond = self.coerce(block, bool_ty, cond, cond_span)?;
 
 				let inst = if let Some(cond) = self.try_resolve_comptime_value(&cond) {
 					let body = if self.cu.values.index_to_key(cond).as_bool() {
@@ -2902,7 +2902,7 @@ impl<'a> Sema<'a> {
 
 					for case in single_cases.iter() {
 						let item = self.resolve_inst(&case.pattern);
-						let item = self.coerce(block, &operand_ty, &item, &case.pattern_span)?;
+						let item = self.coerce(block, operand_ty, item, &case.pattern_span)?;
 						if self.try_resolve_comptime_value(&item) == Some(operand_val) {
 							matched_body = Some(case.body);
 							break;
@@ -2913,7 +2913,7 @@ impl<'a> Sema<'a> {
 						for case in multi_cases.iter() {
 							for item_ref in case.items.iter() {
 								let item = self.resolve_inst(item_ref);
-								let item = self.coerce(block, &operand_ty, &item, &case.patterns_span)?;
+								let item = self.coerce(block, operand_ty, item, &case.patterns_span)?;
 								if self.try_resolve_comptime_value(&item) == Some(operand_val) {
 									matched_body = Some(case.body);
 									break;
@@ -2941,7 +2941,7 @@ impl<'a> Sema<'a> {
 				// Process single-pattern cases
 				for case in single_cases.iter() {
 					let pattern = self.resolve_inst(&case.pattern);
-					let pattern = self.coerce(block, &operand_ty, &pattern, &case.pattern_span)?;
+					let pattern = self.coerce(block, operand_ty, pattern, &case.pattern_span)?;
 					let body = {
 						let child = self.child_block(block);
 						let expected_len = self.blocks.len();
@@ -2962,7 +2962,7 @@ impl<'a> Sema<'a> {
 					let mut items = BumpVec::new_in(self.instructions_payload_alloc);
 					for item_ref in case.items.iter() {
 						let item = self.resolve_inst(item_ref);
-						let item = self.coerce(block, &operand_ty, &item, &case.patterns_span)?;
+						let item = self.coerce(block, operand_ty, item, &case.patterns_span)?;
 						items.push(item);
 					}
 					let body = {
@@ -2988,7 +2988,7 @@ impl<'a> Sema<'a> {
 					} else {
 						operand_ty
 					};
-					let is_exhaustive = self.check_switch_exhaustive(&exhaustive_ty, &vtir_cases, span);
+					let is_exhaustive = self.check_switch_exhaustive(exhaustive_ty, &vtir_cases, span);
 					if !is_exhaustive {
 						return Err(AnalyzeError::AnalysisFailed);
 					}
@@ -3036,7 +3036,7 @@ impl<'a> Sema<'a> {
 					(value::Key::TypeUnion(_), value::Value::Union(u)) if let Some(tag_ty) = u.tag_ty => {
 						let field_idx = {
 							let pattern = self.resolve_inst(case_pattern);
-							let pattern_enum_tag = self.coerce(block, &tag_ty, &pattern, span)?.as_interned();
+							let pattern_enum_tag = self.coerce(block, tag_ty, pattern, span)?.as_interned();
 							let pattern_value = match self.cu.values.index_to_key(pattern_enum_tag) {
 								value::Key::EnumTag { val, .. } => *val,
 								_ => unreachable!(),
@@ -3139,9 +3139,9 @@ impl<'a> Sema<'a> {
 			// then check if we can perform arithmetic ops between both types
 			match (self.cu.values.index_to_key(lhs_ty), self.cu.values.index_to_key(rhs_ty)) {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
-				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, &rhs_ty, &lhs, span)?, rhs),
+				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
 				(value::Key::TypeInt { .. }, value::Key::TypeAnyint) => {
-					let coerced = self.coerce(block, &lhs_ty, &rhs, span)?;
+					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
 				_ => {
@@ -3333,11 +3333,11 @@ impl<'a> Sema<'a> {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
 				(value::Key::TypeAnyint, value::Key::TypeInt { .. })
 				| (value::Key::TypeAnyint, value::Key::TypeUsize)
-				| (value::Key::TypeAnyint, value::Key::TypeIsize) => (rhs_ty, self.coerce(block, &rhs_ty, &lhs, span)?, rhs),
+				| (value::Key::TypeAnyint, value::Key::TypeIsize) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
 				(value::Key::TypeInt { .. }, value::Key::TypeAnyint)
 				| (value::Key::TypeUsize, value::Key::TypeAnyint)
 				| (value::Key::TypeIsize, value::Key::TypeAnyint) => {
-					let coerced = self.coerce(block, &lhs_ty, &rhs, span)?;
+					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
 				_ => {
@@ -3501,9 +3501,9 @@ impl<'a> Sema<'a> {
 			let rhs_ty = self.type_of(&rhs);
 			match (self.cu.values.index_to_key(lhs_ty), self.cu.values.index_to_key(rhs_ty)) {
 				(l, r) if l == r => (lhs_ty, lhs, rhs),
-				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, &rhs_ty, &lhs, span)?, rhs),
+				(value::Key::TypeAnyint, value::Key::TypeInt { .. }) => (rhs_ty, self.coerce(block, rhs_ty, lhs, span)?, rhs),
 				(value::Key::TypeInt { .. }, value::Key::TypeAnyint) => {
-					let coerced = self.coerce(block, &lhs_ty, &rhs, span)?;
+					let coerced = self.coerce(block, lhs_ty, rhs, span)?;
 					(lhs_ty, lhs, coerced)
 				},
 				_ => {
@@ -3605,7 +3605,7 @@ impl<'a> Sema<'a> {
 							.namespaces
 							.with(|namespaces| namespaces[r#struct.namespace].decls.get(field).copied())
 							.ok_or_else(|| {
-								self.diag_decl_not_found(field, &lhs, field_span);
+								self.diag_decl_not_found(field, lhs, field_span);
 								AnalyzeError::AnalysisFailed
 							})?;
 						let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
@@ -3621,7 +3621,7 @@ impl<'a> Sema<'a> {
 							return Ok(vtir::InstructionRef::Interned(value));
 						}
 						let field_idx = e.field_idx_by_name(field).ok_or_else(|| {
-							self.diag_field_not_found(field, &lhs, field_span);
+							self.diag_field_not_found(field, lhs, field_span);
 							AnalyzeError::AnalysisFailed
 						})?;
 						let tag = value::Key::EnumTag {
@@ -3652,7 +3652,7 @@ impl<'a> Sema<'a> {
 							let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
 							vtir::InstructionRef::Interned(value)
 						} else {
-							self.diag_decl_not_found(field, &lhs, span);
+							self.diag_decl_not_found(field, lhs, span);
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 					},
@@ -3684,7 +3684,7 @@ impl<'a> Sema<'a> {
 					let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
 					vtir::InstructionRef::Interned(value)
 				} else {
-					self.diag_field_not_found(field, &lhs_ty, field_span);
+					self.diag_field_not_found(field, lhs_ty, field_span);
 					return Err(AnalyzeError::AnalysisFailed);
 				}
 			},
@@ -3716,7 +3716,7 @@ impl<'a> Sema<'a> {
 					let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
 					vtir::InstructionRef::Interned(value)
 				} else {
-					self.diag_field_not_found(field, &pointee_ty, field_span);
+					self.diag_field_not_found(field, pointee_ty, field_span);
 					return Err(AnalyzeError::AnalysisFailed);
 				}
 			},
@@ -3784,7 +3784,7 @@ impl<'a> Sema<'a> {
 							.namespaces
 							.with(|namespaces| namespaces[r#struct.namespace].decls.get(field).copied())
 							.ok_or_else(|| {
-								self.diag_decl_not_found(field, &lhs, span);
+								self.diag_decl_not_found(field, lhs, span);
 								AnalyzeError::AnalysisFailed
 							})?;
 
@@ -3819,7 +3819,7 @@ impl<'a> Sema<'a> {
 							let value = self.cu.values.intern_value_ptr(value);
 							vtir::InstructionRef::Interned(value)
 						} else {
-							self.diag_decl_not_found(field, &lhs, span);
+							self.diag_decl_not_found(field, lhs, span);
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 					},
@@ -3847,7 +3847,7 @@ impl<'a> Sema<'a> {
 							let value = self.cu.values.intern_value_ptr(value);
 							vtir::InstructionRef::Interned(value)
 						} else {
-							self.diag_decl_not_found(field, &lhs, span);
+							self.diag_decl_not_found(field, lhs, span);
 							return Err(AnalyzeError::AnalysisFailed);
 						}
 					},
@@ -3873,7 +3873,7 @@ impl<'a> Sema<'a> {
 						ret_ty: ptr_to_field_ty,
 					})
 				} else {
-					self.diag_field_not_found(field, &lhs_pointee_ty, span);
+					self.diag_field_not_found(field, lhs_pointee_ty, span);
 					return Err(AnalyzeError::AnalysisFailed);
 				}
 			},
@@ -4010,14 +4010,14 @@ impl<'a> Sema<'a> {
 
 		let field = &fields[0];
 		let field_idx = union_ty.field_idx_by_name(&field.name.symbol).ok_or_else(|| {
-			self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
+			self.diag_field_not_found(&field.name.symbol, ty, &field.name.span);
 			AnalyzeError::AnalysisFailed
 		})?;
 
 		let union_field = &union_ty.fields[field_idx as usize];
 		let value = if let Some(field_ty) = union_field.ty {
 			let value = self.resolve_inst(&field.value);
-			let value = self.coerce(block, &field_ty, &value, &field.span)?;
+			let value = self.coerce(block, field_ty, value, &field.span)?;
 			Some(value)
 		} else {
 			None
@@ -4083,14 +4083,14 @@ impl<'a> Sema<'a> {
 			for field in fields.iter() {
 				let Some((field_idx, value)) = ('value: {
 					let Some(field_idx) = r#struct.field_idx_by_name(&field.name.symbol) else {
-						self.diag_field_not_found(&field.name.symbol, &ty, &field.name.span);
+						self.diag_field_not_found(&field.name.symbol, ty, &field.name.span);
 						analysis_failed = true;
 						break 'value None; // does not exist: filtered
 					};
 
 					let field_ty = r#struct.fields[field_idx].ty;
 					let value = self.resolve_inst(&field.value);
-					let Ok(value) = self.coerce(block, &field_ty, &value, &field.span) else {
+					let Ok(value) = self.coerce(block, field_ty, value, &field.span) else {
 						analysis_failed = true;
 						break 'value Some((field_idx, None)); // exist but no value
 					};
@@ -4156,7 +4156,7 @@ impl<'a> Sema<'a> {
 				let mut coerced = BumpVec::with_capacity_in(elements.len(), self.instructions_payload_alloc);
 				for element in elements {
 					let value = self.resolve_inst(element);
-					coerced.push(self.coerce(block, &self.cu.values.common.anyptr_t, &value, span)?);
+					coerced.push(self.coerce(block, self.cu.values.common.anyptr_t, value, span)?);
 				}
 				self.inst(block, vtir::Opcode::SliceInit {
 					slice_ty: ty,
@@ -4178,7 +4178,7 @@ impl<'a> Sema<'a> {
 				let mut all_comptime = true;
 				for element in elements {
 					let value = self.resolve_inst(element);
-					let value = self.coerce(block, &array.elem_ty, &value, span)?;
+					let value = self.coerce(block, array.elem_ty, value, span)?;
 					if let Some(value) = self.try_resolve_comptime_value(&value) {
 						comptime_values.push(value);
 					} else {
@@ -4218,27 +4218,27 @@ impl<'a> Sema<'a> {
 	fn coerce(
 		&mut self,
 		block: BlockId,
-		dst_ty: &value::Index,
-		inst: &vtir::InstructionRef,
+		dst_ty: value::Index,
+		inst: vtir::InstructionRef,
 		span: &Span,
 	) -> Result<vtir::InstructionRef, AnalyzeError> {
 		let inst_ty = if inst.is_interned() && self.cu.values.index_to_key(inst.as_interned()).is_type() {
 			inst.as_interned()
 		} else {
-			self.type_of(inst)
+			self.type_of(&inst)
 		};
 
 		// either inst is already of the right type or dst_ty is generic poison, which we can never coerce into
-		if self.cu.values.type_contains_generic_poison(*dst_ty) || dst_ty == &inst_ty {
-			return Ok(*inst);
+		if self.cu.values.type_contains_generic_poison(dst_ty) || dst_ty == inst_ty {
+			return Ok(inst);
 		}
 
 		// Not equals, can we coerce both types ?
 		let result: Result<vtir::InstructionRef, String> = 'msg: {
-			match (self.cu.values.index_to_key(inst_ty), self.cu.values.index_to_key(*dst_ty)) {
-				(_, value::Key::TypeType) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(*inst),
+			match (self.cu.values.index_to_key(inst_ty), self.cu.values.index_to_key(dst_ty)) {
+				(_, value::Key::TypeType) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(inst),
 				(value::Key::TypeAnyint, value::Key::TypeAnyptr) if !self.blocks[block].comptime => {
-					let concrete = self.coerce(block, &self.cu.values.common.i32_t, inst, span)?;
+					let concrete = self.coerce(block, self.cu.values.common.i32_t, inst, span)?;
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
 						value: concrete,
 						value_ty: self.cu.values.common.i32_t,
@@ -4246,7 +4246,7 @@ impl<'a> Sema<'a> {
 				},
 				(_, value::Key::TypeAnyptr) if !self.cu.values.type_is_comptime_only(inst_ty) => {
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
-						value: *inst,
+						value: inst,
 						value_ty: inst_ty,
 					}))
 				},
@@ -4254,7 +4254,7 @@ impl<'a> Sema<'a> {
 					"cannot coerce comptime-only value of type `{}` to runtime `anyptr`",
 					self.cu.values.display_index(inst_ty)
 				)),
-				(_, value::Key::TypeAny) if self.blocks[block].comptime => Ok(*inst),
+				(_, value::Key::TypeAny) if self.blocks[block].comptime => Ok(inst),
 
 				// Integer types conversions
 				(value::Key::TypeAnyint, value::Key::TypeUsize | value::Key::TypeIsize) => {
@@ -4264,14 +4264,11 @@ impl<'a> Sema<'a> {
 
 					// TODO(zino): query usize & isize true sizes...
 
-					let value = value::Key::Int {
-						ty: *dst_ty,
-						value: *value,
-					};
+					let value = value::Key::Int { ty: dst_ty, value: *value };
 					Ok(vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value)))
 				},
 				(value::Key::TypeAnyint, value::Key::TypeInt { signed, bits }) => {
-					if let Some(_value) = self.try_resolve_comptime_value(inst) {
+					if let Some(_value) = self.try_resolve_comptime_value(&inst) {
 						let value::Key::Int { value, .. } = self.cu.values.index_to_key(inst.as_interned()) else {
 							unreachable!("encountered a comptime_int that is not a int");
 						};
@@ -4285,26 +4282,20 @@ impl<'a> Sema<'a> {
 						if !fits {
 							break 'msg Err(format!(
 								"coercion failed: constant {value} is too large to fit in a {}",
-								self.cu.values.display_index(*dst_ty)
+								self.cu.values.display_index(dst_ty)
 							));
 						}
 
 						// coerce ok
-						let value = value::Key::Int {
-							ty: *dst_ty,
-							value: *value,
-						};
+						let value = value::Key::Int { ty: dst_ty, value: *value };
 						Ok(InstructionRef::Interned(self.cu.values.intern_trivial(&value)))
 					} else {
-						if *dst_ty == self.cu.values.common.anyint_t {
+						if dst_ty == self.cu.values.common.anyint_t {
 							break 'msg Err("cannot coerce a comptime_int that does not have a comptime known value".to_string());
 						}
 
 						// runtime value
-						Ok(self.inst(block, vtir::Opcode::UnsafeIntCast {
-							src: *inst,
-							dst_ty: *dst_ty,
-						}))
+						Ok(self.inst(block, vtir::Opcode::UnsafeIntCast { src: inst, dst_ty }))
 					}
 				},
 				(value::Key::TypeAnyfloat, value::Key::TypeF16 | value::Key::TypeF32 | value::Key::TypeF64 | value::Key::TypeF128) => {
@@ -4312,7 +4303,7 @@ impl<'a> Sema<'a> {
 						unreachable!("encountered a comptile_float that is not a float");
 					};
 
-					let (dst_ty_max, converted_val) = match *self.cu.values.index_to_key(*dst_ty) {
+					let (dst_ty_max, converted_val) = match *self.cu.values.index_to_key(dst_ty) {
 						value::Key::TypeF16 => (f16::MAX as f128, value.0 as f16 as f128),
 						value::Key::TypeF32 => (f32::MAX as f128, value.0 as f32 as f128),
 						value::Key::TypeF64 => (f64::MAX as f128, value.0 as f64 as f128),
@@ -4324,7 +4315,7 @@ impl<'a> Sema<'a> {
 					if **value > dst_ty_max {
 						break 'msg Err(format!(
 							"coercion failed: constant {value} is too large to fit in a {}",
-							self.cu.values.display_index(*dst_ty)
+							self.cu.values.display_index(dst_ty)
 						));
 					}
 
@@ -4332,15 +4323,12 @@ impl<'a> Sema<'a> {
 					if **value != converted_val {
 						break 'msg Err(format!(
 							"coercion failed: constant {value} loses precision when coerced to {}, use a explicit cast or suffix",
-							self.cu.values.display_index(*dst_ty)
+							self.cu.values.display_index(dst_ty)
 						));
 					}
 
 					// coerce ok
-					let value = value::Key::Float {
-						ty: *dst_ty,
-						value: *value,
-					};
+					let value = value::Key::Float { ty: dst_ty, value: *value };
 					Ok(vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value)))
 				},
 
@@ -4360,10 +4348,7 @@ impl<'a> Sema<'a> {
 						break 'msg Err("coercion failed: cannot coerce from const pointer to mutable pointer".to_string());
 					}
 
-					let inst = self.inst(block, vtir::Opcode::BitCast {
-						src: *inst,
-						dst_ty: *dst_ty,
-					});
+					let inst = self.inst(block, vtir::Opcode::BitCast { src: inst, dst_ty });
 					Ok(inst)
 				},
 
@@ -4372,14 +4357,14 @@ impl<'a> Sema<'a> {
 					let value::Key::EnumLiteral(enum_lit) = self.cu.values.index_to_key(inst.as_interned()) else {
 						unreachable!();
 					};
-					let dst_enum_ty = self.cu.values.index_to_value(*dst_ty).as_enum();
-					let field = self.analyze_field_val(block, vtir::InstructionRef::Interned(*dst_ty), enum_lit, span, span)?;
+					let dst_enum_ty = self.cu.values.index_to_value(dst_ty).as_enum();
+					let field = self.analyze_field_val(block, vtir::InstructionRef::Interned(dst_ty), enum_lit, span, span)?;
 					Ok(field)
 				},
 
 				_ => Err(format!(
 					"expected type `{}`, found `{}`",
-					self.cu.values.display_index(*dst_ty),
+					self.cu.values.display_index(dst_ty),
 					self.cu.values.display_index(inst_ty)
 				)),
 			}
@@ -4463,11 +4448,11 @@ impl<'a> Sema<'a> {
 	/// Returns true if exhaustive, false if not (and pushes an error diagnostic).
 	fn check_switch_exhaustive(
 		&mut self,
-		operand_ty: &value::Index,
+		operand_ty: value::Index,
 		cases: &[vtir::SwitchCase],
 		span: &Span,
 	) -> bool {
-		let (tag_fields, union_fields) = match self.cu.values.index_to_key_value(*operand_ty) {
+		let (tag_fields, union_fields) = match self.cu.values.index_to_key_value(operand_ty) {
 			(value::Key::TypeEnum(_), value::Value::Enum(e)) => (e.fields, None),
 			(value::Key::TypeUnion(_), value::Value::Union(u)) => {
 				let union_ty = u.as_ref();
@@ -4548,7 +4533,7 @@ impl<'a> Sema<'a> {
 				let opcode = self.resolve_inst(inst);
 
 				// we try to coerce to the type `type` to obtain the underlying type
-				let coerced_inst = self.coerce(block, &self.cu.values.common.type_t, &opcode, span)?;
+				let coerced_inst = self.coerce(block, self.cu.values.common.type_t, opcode, span)?;
 				let coerced_inst = self.try_resolve_comptime_value(&coerced_inst).ok_or_else(|| {
 					self.push_error(
 						Diagnostic::error()
@@ -4748,15 +4733,15 @@ impl<'a> Sema<'a> {
 	#[track_caller]
 	fn ensure_type_exist_in_runtime(
 		&mut self,
-		ty: &value::Index,
+		ty: value::Index,
 		span: &Span,
 	) -> Result<(), AnalyzeError> {
-		if self.cu.values.type_is_comptime_only(*ty) {
+		if self.cu.values.type_is_comptime_only(ty) {
 			self.push_error(
 				Diagnostic::error()
 					.with_message(format!(
 						"type `{}` cannot be used in runtime code, it is or contains a comptime-only type",
-						self.cu.values.display_index(*ty)
+						self.cu.values.display_index(ty)
 					))
 					.with_label(Label::primary().with_span(self.diag_span(*span)))
 					.with_note("try using `const`, giving an explicit type for `anyxxx` types or removing comptime fields"),
@@ -4783,7 +4768,7 @@ impl<'a> Sema<'a> {
 	fn diag_field_not_found(
 		&mut self,
 		field: &str,
-		ty: &value::Index,
+		ty: value::Index,
 		span: &Span,
 	) {
 		self.push_error(
@@ -4791,7 +4776,7 @@ impl<'a> Sema<'a> {
 				.with_message(format!(
 					"field `{}` does not exist in type `{}`",
 					field,
-					self.cu.values.display_index(*ty),
+					self.cu.values.display_index(ty),
 				))
 				.with_label(Label::primary().with_span(self.diag_span(*span))),
 		);
@@ -4802,7 +4787,7 @@ impl<'a> Sema<'a> {
 	fn diag_decl_not_found(
 		&mut self,
 		decl: &Intern<str>,
-		ty: &value::Index,
+		ty: value::Index,
 		span: &Span,
 	) {
 		self.push_error(
@@ -4810,7 +4795,7 @@ impl<'a> Sema<'a> {
 				.with_message(format!(
 					"declaration `{}` does not exist in type `{}`",
 					decl,
-					self.cu.values.display_index(*ty),
+					self.cu.values.display_index(ty),
 				))
 				.with_label(Label::primary().with_span(self.diag_span(*span))),
 		);

@@ -459,7 +459,7 @@ impl<'a> Sema<'a> {
 					arg_inst
 				} else {
 					let coerce_block = generic_block.as_ref().map(|b| **b).unwrap_or(block);
-					self.coerce(coerce_block, &resolved_param_ty, &arg_inst, &arg.span)?
+					self.coerce(coerce_block, resolved_param_ty, arg_inst, &arg.span)?
 				}
 			} else {
 				// no poisoned value, fully known type
@@ -496,13 +496,13 @@ impl<'a> Sema<'a> {
 				}
 
 				let coerce_block = generic_block.as_ref().map(|b| **b).unwrap_or(block);
-				self.coerce(coerce_block, &param_ty, &arg_inst, &arg.span)?
+				self.coerce(coerce_block, param_ty, arg_inst, &arg.span)?
 			};
 
 			resolved_args[arg_idx] = Some((arg_inst, arg.span));
 
 			// this is the right moment to also consume the arg if it's a linear value
-			self.try_consume_linear_value(&arg_inst, &arg.span)?;
+			self.try_consume_linear_value(arg_inst, &arg.span)?;
 
 			// add to arg_map, if the type is comptime we can directly add the inst
 			// else we add a dummy alloc instruction that serve no purpose other than holding the arg_ty
@@ -591,7 +591,7 @@ impl<'a> Sema<'a> {
 						if expected_ret_ty == self.cu.values.common.any_t {
 							ty
 						} else {
-							self.coerce(block, &expected_ret_ty, &vtir::InstructionRef::Interned(ty), span)?
+							self.coerce(block, expected_ret_ty, vtir::InstructionRef::Interned(ty), span)?
 								.as_interned()
 						}
 					} else {
@@ -639,7 +639,7 @@ impl<'a> Sema<'a> {
 						);
 						return Err(AnalyzeError::AnalysisFailed);
 					}
-					self.coerce(block, &expected_ret_ty, &vtir::InstructionRef::Interned(ty), span)?
+					self.coerce(block, expected_ret_ty, vtir::InstructionRef::Interned(ty), span)?
 						.as_interned()
 				} else {
 					// expected_ret_ty match ty
@@ -944,7 +944,7 @@ impl<'a> Sema<'a> {
 				);
 				return Err(AnalyzeError::AnalysisFailed);
 			}
-			self.ensure_type_exist_in_runtime(&resolved_ret_ty, span)?;
+			self.ensure_type_exist_in_runtime(resolved_ret_ty, span)?;
 			if let Some(func_val) = func_val {
 				self.cu.queue_runtime_function_analysis_if_needed(func_val);
 			}

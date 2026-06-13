@@ -40,8 +40,8 @@ impl<IR: IRMarker> InstructionId<IR> {
 	}
 
 	#[inline(always)]
-	pub fn as_ref(&self) -> InstructionRef<IR> {
-		InstructionRef::Instruction(*self)
+	pub fn as_ref(self) -> InstructionRef<IR> {
+		InstructionRef::Instruction(self)
 	}
 }
 
@@ -101,26 +101,26 @@ pub enum InstructionRef<IR: IRMarker> {
 impl<IR: IRMarker> InstructionRef<IR> {
 	/// Returns the instruction ID if this is an `Instruction` variant.
 	#[inline]
-	pub fn as_id(&self) -> Option<InstructionId<IR>> {
+	pub fn as_id(self) -> Option<InstructionId<IR>> {
 		match self {
-			InstructionRef::Instruction(id) => Some(*id),
+			InstructionRef::Instruction(id) => Some(id),
 			InstructionRef::Interned(_) => None,
 		}
 	}
 
 	/// Returns the interned value if this is an `Interned` variant.
 	#[inline]
-	pub fn as_interned(&self) -> value::Index {
+	pub fn as_interned(self) -> value::Index {
 		match self {
-			InstructionRef::Interned(v) => *v,
+			InstructionRef::Interned(v) => v,
 			InstructionRef::Instruction(id) => panic!("not an interned value, is instruction {id}"),
 		}
 	}
 
 	#[inline]
-	pub fn as_interned_opt(&self) -> Option<value::Index> {
+	pub fn as_interned_opt(self) -> Option<value::Index> {
 		match self {
-			InstructionRef::Interned(v) => Some(*v),
+			InstructionRef::Interned(v) => Some(v),
 			InstructionRef::Instruction(id) => None,
 		}
 	}
