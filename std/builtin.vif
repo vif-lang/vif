@@ -15,3 +15,98 @@ pub const CallingConvention = enum(u8) {
 	/// https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions
 	x86_64_windows
 }
+
+/// Describe a Type
+// Should be in sync with compiler internals, especially Sema::analyze_type_info()
+pub const Type = struct {
+	pub const Id = u32
+
+	pub const Field = struct {
+		name: []const u8,
+		ty: Id,
+		offset: usize,
+	}
+
+	pub const Variant = struct {
+		name: []const u8,
+		value: usize,
+	}
+
+	pub const Kind = union(enum) {
+		int: Int,
+		float: Float,
+		@"bool",
+		@"void",
+		@"never",
+		@"type",
+		@"any",
+		@"anyptr",
+		@"anyint",
+		@"anyfloat",
+		ptr: Ptr,
+		slice: Slice,
+		array: Array,
+		@"fn": Fn,
+		@"struct": Struct,
+		@"enum": Enum,
+		@"union": Union,
+
+		pub const Int = struct {
+			signed: bool,
+			bits: u16,
+		}
+
+		pub const Float = struct {
+			bits: u16,
+		}
+
+		pub const Ptr = struct {
+			pointee: Id,
+			is_const: bool,
+		}
+
+		pub const Slice = struct {
+			elem: Id,
+		}
+
+		pub const Array = struct {
+			elem: Id,
+			len: usize,
+		}
+
+		pub const Fn = struct {
+			ret: Id,
+			param_count: u16,
+			var_args: bool,
+		}
+
+		pub const Struct = struct {
+			field_count: u32,
+			linear: bool,
+			fields: []const Field,
+		}
+
+		pub const Enum = struct {
+			tag: Id,
+			variant_count: u32,
+			linear: bool,
+			variants: []const Variant,
+		}
+
+		pub const Union = struct {
+			has_tag: bool,
+			tag: Id,
+			tag_offset: usize,
+			payload_offset: usize,
+			field_count: u32,
+			linear: bool,
+			fields: []const Field,
+		}
+	}
+
+	/// Unstable unique type ID. No guarentees can be made for this ID.
+	id: Id,
+	name: []const u8,
+	size: usize,
+	kind: Kind,
+}

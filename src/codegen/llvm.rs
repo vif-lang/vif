@@ -54,6 +54,7 @@ use inkwell::{
 		BasicValueEnum,
 		BasicValueUse,
 		FunctionValue,
+		GlobalValue,
 		IntValue,
 		PhiValue,
 		PointerValue,
@@ -74,6 +75,7 @@ use crate::{
 		CompilationUnit,
 		DeclAnalysisState,
 		DeclId,
+		TypeInfoId,
 		module::ModuleId,
 	},
 	frontend::ast,
@@ -1114,7 +1116,19 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					.lowerer
 					.ctx
 					.ptr_sized_int_type(&self.lowerer.target_machine.get_target_data(), None);
-				let type_id = type_id_ty.const_int((*value_ty).as_u32() as u64, false);
+				let type_info_id = self
+					.compilation_unit
+					.type_to_type_info_id
+					.find(value_ty)
+					.expect("anyptr value type must have runtime type info");
+				let type_info_id: usize = self
+					.compilation_unit
+					.type_to_type_info_id
+					.kv(type_info_id)
+					.1
+					.load(std::sync::atomic::Ordering::Acquire)
+					.into();
+				let type_id = type_id_ty.const_int(type_info_id as u64, false);
 				let undef = any_ty.get_undef();
 				let with_ptr = self.builder().build_insert_value(undef, payload_alloca, 0, "any.ptr")?;
 				let with_type_id = self.builder().build_insert_value(with_ptr, type_id, 1, "any.type")?;
@@ -1364,7 +1378,19 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			vtir::Opcode::AnyptrIs { value, target_ty } => {
 				let value = self.resolve_inst(*value).into_struct_value();
 				let runtime_type_id = self.builder().build_extract_value(value, 1, "any.type")?.into_int_value();
-				let target_type_id = runtime_type_id.get_type().const_int((*target_ty).as_u32() as u64, false);
+				let type_info_id = self
+					.compilation_unit
+					.type_to_type_info_id
+					.find(target_ty)
+					.expect("anyptr target type must have runtime type info");
+				let type_info_id: usize = self
+					.compilation_unit
+					.type_to_type_info_id
+					.kv(type_info_id)
+					.1
+					.load(std::sync::atomic::Ordering::Acquire)
+					.into();
+				let target_type_id = runtime_type_id.get_type().const_int(type_info_id as u64, false);
 				let is_target = self
 					.builder()
 					.build_int_compare(inkwell::IntPredicate::EQ, runtime_type_id, target_type_id, "any.is")?;
@@ -1374,6 +1400,47 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				let value = self.resolve_inst(*value).into_struct_value();
 				let payload_ptr = self.builder().build_extract_value(value, 0, "any.ptr")?.into_pointer_value();
 				let loaded = self.build_load(*target_ty, payload_ptr)?;
+				self.vtir_inst_to_llvm_value.insert(id, loaded);
+			},
+			vtir::Opcode::AnyptrPtr { value, ptr_ty: _ } => {
+				let value = self.resolve_inst(*value).into_struct_value();
+				let payload_ptr = self.builder().build_extract_value(value, 0, "any.ptr")?;
+				self.vtir_inst_to_llvm_value.insert(id, payload_ptr.as_any_value_enum());
+			},
+			vtir::Opcode::AnyptrFromRaw { ptr, type_id } => {
+				let ptr = self.resolve_inst(*ptr).into_pointer_value();
+				let type_id = self.resolve_inst(*type_id).into_int_value();
+				let runtime_type_id_ty = self
+					.lowerer
+					.ctx
+					.ptr_sized_int_type(&self.lowerer.target_machine.get_target_data(), None);
+				let type_id = self.builder().build_int_z_extend(type_id, runtime_type_id_ty, "any.type")?;
+				let any_ty = self
+					.lowerer
+					.lower_type(self.compilation_unit.values.common.anyptr_t)
+					.into_struct_type();
+				let with_ptr = self.builder().build_insert_value(any_ty.get_undef(), ptr, 0, "any.ptr")?;
+				let value = self.builder().build_insert_value(with_ptr, type_id, 1, "any.value")?;
+				self.vtir_inst_to_llvm_value.insert(id, value.as_any_value_enum());
+			},
+			vtir::Opcode::AnyptrTypeInfo { value, ty } => {
+				let value = self.resolve_inst(*value).into_struct_value();
+				let runtime_type_id = self.builder().build_extract_value(value, 1, "any.type")?.into_int_value();
+				let ptr_ty = self.lowerer.ctx.ptr_type(AddressSpace::default());
+				let table_ptr = self
+					.builder()
+					.build_load(ptr_ty, self.lowerer.type_info_table.as_pointer_value(), "any.type.info.table")?
+					.into_pointer_value();
+				// SAFETY: runtime type IDs are dense indices into the finalized RTTI pointer table.
+				let type_info_ptr_ptr = unsafe {
+					self.builder()
+						.build_in_bounds_gep(ptr_ty, table_ptr, &[runtime_type_id], "any.type.info.slot")?
+				};
+				let type_info_ptr = self
+					.builder()
+					.build_load(ptr_ty, type_info_ptr_ptr, "any.type.info.ptr")?
+					.into_pointer_value();
+				let loaded = self.build_load(*ty, type_info_ptr)?;
 				self.vtir_inst_to_llvm_value.insert(id, loaded);
 			},
 			vtir::Opcode::Undefined { ty } => {
@@ -1800,6 +1867,7 @@ pub struct Lowerer<'ctx> {
 	interned_value_to_llvm_type: FxHashMap<value::Index, AnyTypeEnum<'ctx>>,
 	interned_value_to_llvm_value: FxHashMap<value::Index, AnyValueEnum<'ctx>>,
 	interned_value_to_llvm_storage: FxHashMap<value::Index, PointerValue<'ctx>>,
+	type_info_table: GlobalValue<'ctx>,
 	attributes: LlvmAttributes,
 	intrins: LlvmIntrins,
 	di: Option<DebugInfoCtx<'ctx>>,
@@ -1906,6 +1974,12 @@ impl<'ctx> Lowerer<'ctx> {
 		let data_layout = target_machine.get_target_data().get_data_layout();
 		module.set_data_layout(&data_layout);
 		module.set_triple(&triple);
+		let type_info_ptr_ty = ctx.ptr_type(AddressSpace::default());
+		let type_info_table = module.add_global(type_info_ptr_ty, None, "__vif_type_info_table");
+		type_info_table.set_linkage(Linkage::Private);
+		type_info_table.set_constant(true);
+		type_info_table.set_unnamed_address(UnnamedAddress::Global);
+		type_info_table.set_initializer(&type_info_ptr_ty.const_null());
 
 		// On Windows we want to emit CodeView data for PDB-based debuggers
 		let u32_one = ctx.i32_type().const_int(1, false);
@@ -1963,6 +2037,7 @@ impl<'ctx> Lowerer<'ctx> {
 			interned_value_to_llvm_type: Default::default(),
 			interned_value_to_llvm_value: Default::default(),
 			interned_value_to_llvm_storage: Default::default(),
+			type_info_table,
 			attributes: LlvmAttributes::new(ctx),
 			intrins: LlvmIntrins::new(ctx),
 			di,
@@ -2038,6 +2113,15 @@ impl<'ctx> Lowerer<'ctx> {
 					.as_basic_value_enum();
 				slice_ty.const_named_struct(&[ptr, len]).as_any_value_enum()
 			},
+			value::Key::Slice { ty, ptr, len } => {
+				let slice_ty = self.lower_type(*ty).into_struct_type();
+				let ptr = self
+					.lower_interned_value_as_llvm_value(*ptr)
+					.into_pointer_value()
+					.as_basic_value_enum();
+				let len = self.lower_interned_value_as_llvm_value(*len).into_int_value().as_basic_value_enum();
+				slice_ty.const_named_struct(&[ptr, len]).as_any_value_enum()
+			},
 			value::Key::Int { ty, value } => {
 				let ty = self.lower_type(*ty);
 				let str = value.to_string();
@@ -2054,7 +2138,39 @@ impl<'ctx> Lowerer<'ctx> {
 			value::Key::Bool(b) => self.ctx.bool_type().const_int(*b as u64, false).into(),
 			value::Key::Ptr(p) => match p.kind {
 				value::PtrKind::Value(v) => self.lower_interned_value(v).as_any_value_enum(),
-				_ => unreachable!("{p:?}"),
+				value::PtrKind::Decl(decl) => {
+					let decl_value = self.compilation_unit.decls.with_mut(|decls| {
+						let DeclAnalysisState::Analysed { value } = decls[decl].analysis_state else {
+							unreachable!("decl-backed constant pointer references an unanalyzed decl")
+						};
+						value
+					});
+					let decl_storage = self.lower_interned_value_in_const_storage(decl_value);
+					let pointee_ty = self.compilation_unit.values.index_to_key(p.ty).as_type_ptr().pointee_ty;
+					let decl_value_ty = self.compilation_unit.values.type_of_interned(decl_value);
+					if decl_value_ty == pointee_ty {
+						decl_storage.as_any_value_enum()
+					} else if let value::Key::Type(value::Type::Array(array)) = self.compilation_unit.values.index_to_key(decl_value_ty)
+						&& array.elem_ty == pointee_ty
+					{
+						let array_ty = self.lower_type_basic(decl_value_ty);
+						let zero = self.ctx.i32_type().const_zero();
+						// SAFETY: the global stores an array constant of `array_ty`; indexing [0, 0]
+						// yields the address of the first element used as the slice backing pointer.
+						unsafe {
+							PointerValue::new(llvm_sys::core::LLVMConstInBoundsGEP2(
+								array_ty.as_type_ref(),
+								decl_storage.as_value_ref(),
+								[zero.as_value_ref(), zero.as_value_ref()].as_mut_ptr(),
+								2,
+							))
+						}
+						.as_any_value_enum()
+					} else {
+						unreachable!("decl-backed constant pointer type mismatch: {p:?}");
+					}
+				},
+				value::PtrKind::ComptimeAlloc(_) => unreachable!("{p:?}"),
 			},
 			value::Key::EnumTag { val: v, .. } => self.lower_interned_value_as_llvm_value(*v),
 			value::Key::Fn(fun) => self.lower_decl_fn(fun.owner_decl).as_any_value_enum(),
@@ -2199,6 +2315,7 @@ impl<'ctx> Lowerer<'ctx> {
 			value::Key::Int { ty, .. } => return self.lower_type_basic(*ty),
 			value::Key::Undefined { .. }
 			| value::Key::Str { .. }
+			| value::Key::Slice { .. }
 			| value::Key::Float { .. }
 			| value::Key::Bool(_)
 			| value::Key::Ptr(_)
@@ -2424,6 +2541,7 @@ impl<'ctx> Lowerer<'ctx> {
 				// not types
 				value::Key::Undefined { .. }
 				| value::Key::Str { .. }
+				| value::Key::Slice { .. }
 				| value::Key::Float { .. }
 				| value::Key::Bool(_)
 				| value::Key::Ptr(_)
@@ -2671,6 +2789,21 @@ impl<'ctx> Lowerer<'ctx> {
 		mut self,
 		build_opts: &Build,
 	) -> Result<inkwell::memory_buffer::MemoryBuffer, ()> {
+		let ptr_ty = self.ctx.ptr_type(AddressSpace::default());
+		let mut type_info_ptrs = Vec::with_capacity(self.compilation_unit.type_info_entries.len());
+		for index in 0..self.compilation_unit.type_info_entries.len() {
+			let type_info = *self.compilation_unit.type_info_entries.get(TypeInfoId(index));
+			type_info_ptrs.push(self.lower_interned_value_in_const_storage(type_info));
+		}
+		let type_info_entries = self
+			.module
+			.add_global(ptr_ty.array_type(type_info_ptrs.len() as u32), None, "__vif_type_info_entries");
+		type_info_entries.set_linkage(Linkage::Private);
+		type_info_entries.set_constant(true);
+		type_info_entries.set_unnamed_address(UnnamedAddress::Global);
+		type_info_entries.set_initializer(&ptr_ty.const_array(&type_info_ptrs));
+		self.type_info_table.set_initializer(&type_info_entries.as_pointer_value());
+
 		if let Some(di) = self.di {
 			di.builder.finalize();
 		}

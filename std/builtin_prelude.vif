@@ -3,6 +3,8 @@
 ///
 /// Built-in functions are prefixed by `@`.
 
+const builtin = @import("builtin.vif")
+
 /// Import the module at `path`.
 extern "builtin" #inline fn @import(comptime path: []const u8) type
 
@@ -47,3 +49,7 @@ extern "builtin" #inline fn @bitcast(value: $src) $dst
 /// Runtime `any` type inspection.
 extern "builtin" #inline fn @anyptr_is($T, value: anyptr) bool
 extern "builtin" #inline fn @anyptr_as($T, value: anyptr) $T
+extern "builtin" #inline fn @anyptr_ptr(value: anyptr) *const u8
+extern "builtin" #inline fn @anyptr_from_raw(ptr: *const u8, type_id: builtin.Type.Id) anyptr
+extern "builtin" #inline fn @anyptr_type_info(value: anyptr) builtin.Type
+extern "builtin" #inline fn @type_info($T) builtin.Type

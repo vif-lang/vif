@@ -50,6 +50,8 @@ use crate::{
 			DiagnosticWriter,
 			Label,
 		},
+		sharded_index_map::ShardedIndexMap,
+		virtual_dyn_array::VirtMemArenaDynArray,
 	},
 	compile_unit::{
 		module::{
@@ -365,6 +367,26 @@ pub struct CompilationUnit {
 	pub sema_errors: Mutex<FxHashMap<ModuleId, Vec<Diagnostic>>>,
 	pub deferred_effect_checks: Mutex<Vec<DeferredEffectCheck>>,
 	pub codegen_tasks: crossbeam::queue::SegQueue<(value::Index, ir::vtir::Vtir)>,
+
+	/// Store for each known type its type info, this is used by comptime for CTTI and codegen for RTTI
+	pub type_to_type_info_id: ShardedIndexMap<value::Index, TypeInfoId, FxBuildHasher>,
+	pub type_info_entries: VirtMemArenaDynArray<TypeInfoId, value::Index>,
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default, bytemuck::NoUninit)]
+pub struct TypeInfoId(pub usize);
+impl From<TypeInfoId> for usize {
+	#[inline(always)]
+	fn from(value: TypeInfoId) -> Self {
+		value.0
+	}
+}
+impl From<usize> for TypeInfoId {
+	#[inline(always)]
+	fn from(value: usize) -> Self {
+		Self(value)
+	}
 }
 
 enum CodegenLowerer<'ctx> {
@@ -444,6 +466,11 @@ impl CompilationUnit {
 			module_path_to_id
 		};
 
+		let sharded_maps_shard_count = std::thread::available_parallelism()
+			.map(|i| i.get())
+			.unwrap_or(1)
+			.next_power_of_two() as _;
+
 		let cu = CompilationUnit {
 			build_args,
 			resolved_target,
@@ -453,12 +480,7 @@ impl CompilationUnit {
 			builtin_module,
 			builtin_prelude_module,
 			std_rt_module,
-			values: ValueStore::new(
-				std::thread::available_parallelism()
-					.map(|i| i.get())
-					.unwrap_or(1)
-					.next_power_of_two() as _,
-			),
+			values: ValueStore::new(sharded_maps_shard_count),
 			modules: RwLock::new(modules),
 			namespaces: RwLock::default(),
 			failed_modules: Mutex::new(Vec::default()),
@@ -468,6 +490,8 @@ impl CompilationUnit {
 			sema_errors: Default::default(),
 			deferred_effect_checks: Default::default(),
 			codegen_tasks: Default::default(),
+			type_to_type_info_id: ShardedIndexMap::new(sharded_maps_shard_count, 8192, FxBuildHasher),
+			type_info_entries: VirtMemArenaDynArray::with_capacity(8192),
 		};
 		Arc::new(cu)
 	}
@@ -1141,5 +1165,31 @@ pub const target: Target = Target {{
 		};
 
 		Ok(value)
+	}
+
+	// ======== Built-in decls retrieval
+	fn builtin_type_info(self: &Arc<CompilationUnit>) -> Result<value::Index, sema::AnalyzeError> {
+		let Some(builtin_namespace) = self.modules.with(|modules| modules[self.builtin_module].namespace.get().copied()) else {
+			unreachable!("internal compiler error: `builtin` module does not have a namespace");
+		};
+
+		let type_symbol: Intern<str> = "Type".into();
+		let decl = self
+			.namespaces
+			.with(|namespaces| namespaces[builtin_namespace].decls.get(&type_symbol).copied());
+
+		let Some(decl) = decl else {
+			unreachable!("internal compiler error: `builtin` module does not have a declaration for Type");
+		};
+
+		let Some(ty) = self.get_or_analyze_decl_value(decl)? else {
+			return Err(sema::AnalyzeError::AnalysisFailed);
+		};
+
+		let value::Key::Type(value::Type::Struct(_)) = self.values.index_to_key(ty) else {
+			unreachable!("internal compiler error: `Type` declaration in `builtin` module is not a struct");
+		};
+
+		Ok(ty)
 	}
 }

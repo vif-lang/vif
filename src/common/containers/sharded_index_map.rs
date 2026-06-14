@@ -39,7 +39,7 @@ pub use entry::*;
 /// # Validity
 ///
 /// A [`Index`] is considered valid when it points to a initialized/push key-value pair inside a valid shard
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(transparent)]
 pub struct Index(u32);
 impl Index {

@@ -26,6 +26,7 @@ use std::{
 use bitvec::vec::BitVec;
 use internment::Intern;
 use rustc_hash::FxBuildHasher;
+use thread_local::ThreadLocal;
 
 pub use crate::int::Anyint;
 use crate::{
@@ -414,6 +415,11 @@ pub enum Key {
 		slice_ty: Index,
 		value: Intern<[u8]>,
 	},
+	Slice {
+		ty: Index,
+		ptr: Index,
+		len: Index,
+	},
 	Int {
 		ty: Index,
 		value: Intern<Anyint>,
@@ -638,6 +644,7 @@ impl<'store> Display for DisplayIndex<'store> {
 			Key::GenericPoison { name, .. } => write!(f, "{}", name),
 			Key::Undefined { .. }
 			| Key::Str { .. }
+			| Key::Slice { .. }
 			| Key::Int { .. }
 			| Key::Float { .. }
 			| Key::Bool(_)
@@ -786,7 +793,7 @@ pub type ValueMap = ShardedIndexMap<Key, Value, FxBuildHasher>;
 pub struct ValueStore {
 	pub value_map: ValueMap,
 	pub common: CommonValues,
-	payload_bump_alloc: Mutex<bumpalo::Bump>,
+	payload_bump_alloc: ThreadLocal<bumpalo::Bump>,
 
 	// we may store pointers to the bump allocator inside keys & values
 	_pinned: PhantomPinned,
@@ -837,7 +844,7 @@ impl ValueStore {
 		};
 		Self {
 			value_map,
-			payload_bump_alloc: Mutex::new(bumpalo::Bump::new()),
+			payload_bump_alloc: ThreadLocal::new(),
 			common: common_types,
 			_pinned: PhantomPinned,
 		}
@@ -909,6 +916,7 @@ impl ValueStore {
 			| Key::Int { .. }
 			| Key::Float { .. }
 			| Key::Str { .. }
+			| Key::Slice { .. }
 			| Key::Bool(..)
 			| Key::FnDecl(..)
 			| Key::EnumTag { .. }
@@ -989,6 +997,7 @@ impl ValueStore {
 			Key::GenericPoison { param_id, .. } => Some(*param_id),
 			Key::Undefined { .. }
 			| Key::Str { .. }
+			| Key::Slice { .. }
 			| Key::Int { .. }
 			| Key::Float { .. }
 			| Key::Bool(_)
@@ -1058,6 +1067,7 @@ impl ValueStore {
 			Key::GenericPoison { .. } => true,
 			Key::Undefined { .. }
 			| Key::Str { .. }
+			| Key::Slice { .. }
 			| Key::Int { .. }
 			| Key::Float { .. }
 			| Key::Bool(_)
@@ -1213,7 +1223,7 @@ impl ValueStore {
 		&self,
 		slice: &[T],
 	) -> &'static [T] {
-		let bump = self.payload_bump_alloc.lock();
+		let bump = self.payload_bump_alloc.get_or_default();
 		let allocated = bump.alloc_slice_copy(slice);
 		// SAFETY: Payload allocations live for the lifetime of the value store.
 		unsafe { &*(allocated as *const [T]) }
@@ -1225,7 +1235,7 @@ impl ValueStore {
 		bitvec: &BitVec<u8>,
 	) -> &'static bitvec::slice::BitSlice<u8> {
 		let raw = bitvec.as_raw_slice();
-		let bump = self.payload_bump_alloc.lock();
+		let bump = self.payload_bump_alloc.get_or_default();
 		let allocated = bump.alloc_slice_copy(raw);
 		let len = bitvec.len();
 
@@ -1241,7 +1251,7 @@ impl ValueStore {
 	where
 		I: Iterator + ExactSizeIterator,
 	{
-		let bump = self.payload_bump_alloc.lock();
+		let bump = self.payload_bump_alloc.get_or_default();
 		let slice = bump.alloc_slice_fill_iter(iter);
 		// SAFETY: Payload allocations live for the lifetime of the value store.
 		unsafe { core::mem::transmute(slice) }
@@ -1252,7 +1262,7 @@ impl ValueStore {
 		&self,
 		val: T,
 	) -> ValueStoreBumpRef<T> {
-		let bump = self.payload_bump_alloc.lock();
+		let bump = self.payload_bump_alloc.get_or_default();
 		// SAFETY: The bump allocation is non-null and lives with the value store.
 		unsafe { ValueStoreBumpRef::new(bump.alloc(val)) }
 	}
@@ -1270,6 +1280,7 @@ impl ValueStore {
 			Key::Int { ty, .. } => *ty,
 			Key::Float { ty, .. } => *ty,
 			Key::Str { slice_ty: ty, .. } => *ty,
+			Key::Slice { ty, .. } => *ty,
 			Key::Bool(_) => self.common.bool_t,
 			Key::FnDecl(decl) => decl.ty,
 			Key::EnumTag { enum_ty: ty, .. } => *ty,

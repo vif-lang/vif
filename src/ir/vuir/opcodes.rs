@@ -37,6 +37,10 @@ pub enum BuiltinKind {
 	SliceCopyNonoverlapping,
 	AnyptrIs,
 	AnyptrAs,
+	AnyptrPtr,
+	AnyptrFromRaw,
+	AnyptrTypeInfo,
+	TypeInfo,
 }
 
 #[derive(Copy, Clone, Debug)]

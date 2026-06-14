@@ -259,6 +259,18 @@ pub enum Opcode {
 		value: vtir::InstructionRef,
 		target_ty: value::Index,
 	},
+	AnyptrPtr {
+		value: vtir::InstructionRef,
+		ptr_ty: value::Index,
+	},
+	AnyptrFromRaw {
+		ptr: vtir::InstructionRef,
+		type_id: vtir::InstructionRef,
+	},
+	AnyptrTypeInfo {
+		value: vtir::InstructionRef,
+		ty: value::Index,
+	},
 	SliceFromRawParts {
 		slice_ty: value::Index,
 		ptr: vtir::InstructionRef,
@@ -396,6 +408,9 @@ pub fn type_of(
 				Opcode::BitCast { dst_ty, .. } => *dst_ty,
 				Opcode::AnyptrIs { .. } => values.common.bool_t,
 				Opcode::AnyptrAs { target_ty, .. } => *target_ty,
+				Opcode::AnyptrPtr { ptr_ty, .. } => *ptr_ty,
+				Opcode::AnyptrFromRaw { .. } => values.common.anyptr_t,
+				Opcode::AnyptrTypeInfo { ty, .. } => *ty,
 				Opcode::SliceFromRawParts { slice_ty, .. } => *slice_ty,
 				Opcode::SlicePtr { ptr_ty, .. } => *ptr_ty,
 				Opcode::SliceLen { .. } => values.common.usize_t,

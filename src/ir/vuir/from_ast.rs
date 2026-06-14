@@ -1170,11 +1170,6 @@ impl<'ast> Lowerer<'ast> {
 						.values
 						.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: u8_ty })));
 
-					let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
-						pointee_ty: u8_ty,
-						packed: None,
-						is_const: true,
-					})));
 					vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Str { slice_ty, value: *s }))
 				},
 				ast::Lit::Float { symbol, suffix } => vuir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Float {
@@ -2483,6 +2478,10 @@ impl<'ast> Lowerer<'ast> {
 				"@slice_copy_nonoverlapping" => Some(vuir::BuiltinKind::SliceCopyNonoverlapping),
 				"@anyptr_is" => Some(vuir::BuiltinKind::AnyptrIs),
 				"@anyptr_as" => Some(vuir::BuiltinKind::AnyptrAs),
+				"@anyptr_ptr" => Some(vuir::BuiltinKind::AnyptrPtr),
+				"@anyptr_from_raw" => Some(vuir::BuiltinKind::AnyptrFromRaw),
+				"@anyptr_type_info" => Some(vuir::BuiltinKind::AnyptrTypeInfo),
+				"@type_info" => Some(vuir::BuiltinKind::TypeInfo),
 				_ if fun.ident.symbol.starts_with("@") => {
 					self.errors.push(
 						Diagnostic::error()

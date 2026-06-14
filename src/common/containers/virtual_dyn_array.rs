@@ -165,6 +165,27 @@ where
 		unsafe { self.reserved.cast::<T>().add(index).as_ref() }
 	}
 
+	pub fn len(&self) -> usize {
+		self.initialized.load(Ordering::Acquire)
+	}
+
+	/// Replace an initialized element.
+	///
+	/// # Safety
+	///
+	/// - No concurrent access to `index` must be performed while this operation takes place
+	pub unsafe fn replace(
+		&self,
+		index: I,
+		value: T,
+	) -> T {
+		let index = index.into();
+		assert!(index < self.initialized.load(Ordering::Acquire));
+		// SAFETY: the bounds check establishes a valid initialized element, and the
+		// caller guarantees exclusive access to it
+		unsafe { self.elem_ptr(index).replace(value) }
+	}
+
 	fn ensure_committed_for_index(
 		&self,
 		index: usize,

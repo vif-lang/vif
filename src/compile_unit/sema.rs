@@ -39,6 +39,7 @@ use crate::{
 		DeclId,
 		Namespace,
 		NamespaceId,
+		TypeInfoId,
 		module::{
 			ModuleAnalyzeState,
 			ModuleId,
@@ -981,6 +982,7 @@ impl<'a> Sema<'a> {
 			},
 			vuir::BuiltinKind::AnyptrIs => {
 				let target_ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
+				self.analyze_type_info(target_ty)?;
 				let value = self.resolve_inst(&func_vuir_info.params[1].as_ref());
 				let value_ty = self.type_of(&value);
 				if value_ty != self.cu.values.common.anyptr_t {
@@ -1006,6 +1008,46 @@ impl<'a> Sema<'a> {
 					return Err(AnalyzeError::AnalysisFailed);
 				}
 				Ok(self.inst(block, vtir::Opcode::AnyptrAs { value, target_ty }))
+			},
+			vuir::BuiltinKind::AnyptrPtr => {
+				let value = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let value_ty = self.type_of(&value);
+				if value_ty != self.cu.values.common.anyptr_t {
+					self.push_error(
+						Diagnostic::error()
+							.with_message(format!("expected `anyptr`, found `{}`", self.cu.values.display_index(value_ty)))
+							.with_label(Label::primary().with_span(caller_span)),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				}
+				Ok(self.inst(block, vtir::Opcode::AnyptrPtr {
+					value,
+					ptr_ty: fun_ty.ret_ty,
+				}))
+			},
+			vuir::BuiltinKind::AnyptrFromRaw => {
+				let ptr = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let type_id = self.resolve_inst(&func_vuir_info.params[1].as_ref());
+				Ok(self.inst(block, vtir::Opcode::AnyptrFromRaw { ptr, type_id }))
+			},
+			vuir::BuiltinKind::AnyptrTypeInfo => {
+				let value = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let value_ty = self.type_of(&value);
+				if value_ty != self.cu.values.common.anyptr_t {
+					self.push_error(
+						Diagnostic::error()
+							.with_message(format!("expected `anyptr`, found `{}`", self.cu.values.display_index(value_ty)))
+							.with_label(Label::primary().with_span(caller_span)),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				}
+				let ty = self.cu.builtin_type_info()?;
+				Ok(self.inst(block, vtir::Opcode::AnyptrTypeInfo { value, ty }))
+			},
+			vuir::BuiltinKind::TypeInfo => {
+				let ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
+				let type_info_id = self.analyze_type_info(ty)?;
+				Ok(self.cu.type_info_entries[type_info_id].into())
 			},
 		}
 	}
@@ -4107,6 +4149,101 @@ impl<'a> Sema<'a> {
 			},
 		};
 
+		let const_index: Option<usize> = self.try_resolve_comptime_value(&index).and_then(|index| {
+			let value::Key::Int { value, .. } = self.cu.values.index_to_key(index) else {
+				return None;
+			};
+			value.to_u64().and_then(|value| value.try_into().ok())
+		});
+
+		if let Some(index_usize) = const_index {
+			let const_ptr_target = |ptr: value::Ptr| -> Option<value::Index> {
+				match ptr.kind {
+					PtrKind::Value(value) => Some(value),
+					PtrKind::Decl(decl) => self.cu.decls.with_mut(|decls| {
+						let DeclAnalysisState::Analysed { value } = decls[decl].analysis_state else {
+							unreachable!("constant array backing decl must be analyzed");
+						};
+						Some(value)
+					}),
+					PtrKind::ComptimeAlloc(_) => None,
+				}
+			};
+
+			let const_elem = match self.cu.values.index_to_key(array_pointee_ty) {
+				value::Key::Type(value::Type::Slice(_)) => {
+					let slice = self.analyze_load(block, array_ptr, &span.span)?;
+					let slice = self.try_resolve_comptime_value(&slice);
+					match slice.map(|slice| self.cu.values.index_to_key(slice)) {
+						Some(value::Key::Str { value, .. }) => value.get(index_usize).map(|byte| {
+							let u8_ty = self
+								.cu
+								.values
+								.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits: 8 }));
+							self.cu.values.intern_trivial(&value::Key::Int {
+								ty: u8_ty,
+								value: Anyint::from(*byte).into(),
+							})
+						}),
+						Some(value::Key::Slice { ptr, len, .. }) => {
+							let len: usize = match self.cu.values.index_to_key(*len) {
+								value::Key::Int { value, .. } => value.to_u64().unwrap().try_into().unwrap(),
+								_ => unreachable!("slice len must be an integer"),
+							};
+							if index_usize >= len {
+								None
+							} else {
+								if let Some(backing) = const_ptr_target(*self.cu.values.index_to_key(*ptr).as_ptr()) {
+									match self.cu.values.index_to_key(backing) {
+										value::Key::Aggregate { values, .. } => values.get(index_usize).copied(),
+										_ => None,
+									}
+								} else {
+									None
+								}
+							}
+						},
+						_ => None,
+					}
+				},
+				value::Key::Type(value::Type::Array(_)) => {
+					let backing = self
+						.try_resolve_comptime_value(&array_ptr)
+						.and_then(|ptr| const_ptr_target(*self.cu.values.index_to_key(ptr).as_ptr()));
+					match backing.map(|backing| self.cu.values.index_to_key(backing)) {
+						Some(value::Key::Aggregate { values, .. }) => values.get(index_usize).copied(),
+						_ => None,
+					}
+				},
+				_ => None,
+			};
+
+			if let Some(value) = const_elem {
+				let elem_ptr_ty = match self.cu.values.index_to_key(array_pointee_ty) {
+					value::Key::Type(value::Type::Slice(slice)) => {
+						self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
+							pointee_ty: slice.pointee_ty,
+							packed: None,
+							is_const: true,
+						})))
+					},
+					value::Key::Type(value::Type::Array(array)) => {
+						self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
+							pointee_ty: array.elem_ty,
+							packed: None,
+							is_const: true,
+						})))
+					},
+					_ => unreachable!(),
+				};
+				let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
+					ty: elem_ptr_ty,
+					kind: PtrKind::Value(value),
+				}));
+				return Ok(ptr.into());
+			}
+		}
+
 		let inst = match self.cu.values.index_to_key(array_pointee_ty) {
 			value::Key::Type(value::Type::Slice(slice)) => {
 				let elem_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(value::TypePtr {
@@ -4371,6 +4508,654 @@ impl<'a> Sema<'a> {
 		Ok((value, ControlFlow::May))
 	}
 
+	fn analyze_type_info(
+		&mut self,
+		ty: value::Index,
+	) -> Result<TypeInfoId, AnalyzeError> {
+		if let Some(index) = self.cu.type_to_type_info_id.find(&ty) {
+			let type_info_id = self.cu.type_to_type_info_id.kv(index).1.load(std::sync::atomic::Ordering::Acquire);
+			return Ok(type_info_id);
+		}
+
+		// work here may be duplicated with other workers, it be deduplicated at the end by the sharded index map
+		// but we may still leak some memory to the bump allocator
+		let mut reference_type = |this: &mut Self, referenced_ty| {
+			let id = this.analyze_type_info(referenced_ty).unwrap();
+			id.0 as u32
+		};
+
+		let type_info_ty = self.cu.builtin_type_info()?;
+		let type_info_ty_struct = self.cu.values.index_to_value(type_info_ty).as_struct();
+		let values = &self.cu.values;
+		let ty_layout = match values.index_to_key(ty) {
+			value::Key::Type(value::Type::Fn(_)) => values.type_ptr_layout(&self.cu.resolved_target, ty),
+			_ => values.type_layout(&self.cu.resolved_target, ty),
+		};
+		let u8_ty = self
+			.cu
+			.values
+			.intern_trivial(&value::Key::Type(value::Type::Int { signed: false, bits: 8 }));
+		let str_slice_ty = self
+			.cu
+			.values
+			.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: u8_ty })));
+		let builtin_type_namespace = type_info_ty_struct.namespace;
+		let field_ty = {
+			let decl = self
+				.lookup_decl_in_namespace(builtin_type_namespace, Intern::from("Field"))
+				.expect("internal compiler error: builtin.Type.Field declaration missing");
+			self.cu.get_or_analyze_decl_value(decl)?.unwrap()
+		};
+		let variant_ty = {
+			let decl = self
+				.lookup_decl_in_namespace(builtin_type_namespace, Intern::from("Variant"))
+				.expect("internal compiler error: builtin.Type.Variant declaration missing");
+			self.cu.get_or_analyze_decl_value(decl)?.unwrap()
+		};
+
+		let value::Key::Type(ty_key) = values.index_to_key(ty) else {
+			unreachable!("expected a type for builtin.Type RTTI")
+		};
+
+		let kind = {
+			let kind_ty = type_info_ty_struct.fields[type_info_ty_struct.field_idx_by_name("kind").unwrap()].ty;
+			let kind_ty_union = self.cu.values.index_to_value(kind_ty).as_union();
+			let kind_tag_ty = {
+				kind_ty_union
+					.tag_ty
+					.expect("internal compiler error: builtin.Type.Kind must be a tagged union")
+			};
+
+			match ty_key {
+				// 0: int
+				value::Type::Int { signed, bits } => {
+					let payload_ty = kind_ty_union.fields[0].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 0);
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Bool(*signed)),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u16_t,
+							value: Anyint::from(*bits).into(),
+						}),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::Usize => {
+					let payload_ty = kind_ty_union.fields[0].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 0);
+					let bits: u16 = self.cu.resolved_target.ptr_width_in_bits.into();
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Bool(false)),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u16_t,
+							value: Anyint::from(bits).into(),
+						}),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::Isize => {
+					let payload_ty = kind_ty_union.fields[0].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 0);
+					let bits: u16 = self.cu.resolved_target.ptr_width_in_bits.into();
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Bool(true)),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u16_t,
+							value: Anyint::from(bits).into(),
+						}),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				// 1: float
+				value::Type::F16 => {
+					let payload_ty = kind_ty_union.fields[1].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 1);
+					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
+						ty: values.common.u16_t,
+						value: Anyint::from(16u16).into(),
+					})]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::F32 => {
+					let payload_ty = kind_ty_union.fields[1].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 1);
+					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
+						ty: values.common.u16_t,
+						value: Anyint::from(32u16).into(),
+					})]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::F64 => {
+					let payload_ty = kind_ty_union.fields[1].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 1);
+					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
+						ty: values.common.u16_t,
+						value: Anyint::from(64u16).into(),
+					})]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::F128 => {
+					let payload_ty = kind_ty_union.fields[1].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 1);
+					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
+						ty: values.common.u16_t,
+						value: Anyint::from(128u16).into(),
+					})]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				// 2..9: tag-only variants
+				value::Type::Bool => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 2)),
+					payload: None,
+				}),
+				value::Type::Void => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 3)),
+					payload: None,
+				}),
+				value::Type::Never => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 4)),
+					payload: None,
+				}),
+				value::Type::Type => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 5)),
+					payload: None,
+				}),
+				value::Type::Any => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 6)),
+					payload: None,
+				}),
+				value::Type::Anyptr => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 7)),
+					payload: None,
+				}),
+				value::Type::Anyint => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 8)),
+					payload: None,
+				}),
+				value::Type::Anyfloat => values.intern_trivial(&value::Key::Union {
+					ty: kind_ty,
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 9)),
+					payload: None,
+				}),
+
+				// 10: ptr
+				value::Type::Ptr(ptr) => {
+					let payload_ty = kind_ty_union.fields[10].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 10);
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(reference_type(self, ptr.pointee_ty)).into(),
+						}),
+						values.intern_trivial(&value::Key::Bool(ptr.is_const)),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				// 11: slice
+				value::Type::Slice(slice) => {
+					let payload_ty = kind_ty_union.fields[11].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 11);
+					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
+						ty: values.common.u32_t,
+						value: Anyint::from(reference_type(self, slice.pointee_ty)).into(),
+					})]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				// 12: array
+				value::Type::Array(array) => {
+					let payload_ty = kind_ty_union.fields[12].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 12);
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(reference_type(self, array.elem_ty)).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.usize_t,
+							value: Anyint::from(array.len).into(),
+						}),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				// 13: fn
+				value::Type::Fn(function) => {
+					let payload_ty = kind_ty_union.fields[13].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 13);
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(reference_type(self, function.ret_ty)).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u16_t,
+							value: Anyint::from(function.params.len() as u16).into(),
+						}),
+						values.intern_trivial(&value::Key::Bool(function.var_args)),
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::Struct(_) => {
+					let payload_ty = kind_ty_union.fields[14].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 14);
+					let value::Value::Struct(r#struct) = values.index_to_value(ty) else {
+						unreachable!("struct type without struct value")
+					};
+					let r#struct = r#struct.as_ref();
+					let field_values = {
+						let mut cur_offset = 0u64;
+						let mut vals = Vec::with_capacity(r#struct.fields.len());
+						for (field_idx, field) in r#struct.fields.iter().enumerate() {
+							let offset = match &r#struct.layout {
+								StructLayout::Standard => {
+									let field_layout = values.type_layout(&self.cu.resolved_target, field.ty);
+									cur_offset = cur_offset.next_multiple_of(field_layout.align);
+									let offset = cur_offset;
+									cur_offset += field_layout.size;
+									offset
+								},
+								StructLayout::Packed { .. } => u64::from(r#struct.get_packed_field_info(field_idx).unwrap().offset / 8),
+							};
+							let name = values.intern_trivial(&value::Key::Str {
+								slice_ty: str_slice_ty,
+								value: Intern::from(field.name.as_bytes()),
+							});
+							vals.push(values.intern_trivial(&value::Key::Aggregate {
+								ty: field_ty,
+								values: self.cu.values.alloc_slice(&[
+									name,
+									values.intern_trivial(&value::Key::Int {
+										ty: values.common.u32_t,
+										value: Anyint::from(reference_type(self, field.ty)).into(),
+									}),
+									values.intern_trivial(&value::Key::Int {
+										ty: values.common.usize_t,
+										value: Anyint::from(offset).into(),
+									}),
+								]),
+							}));
+						}
+						self.cu.values.alloc_slice_fill_iter(vals.into_iter())
+					};
+					let fields_slice_ty = values.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: field_ty })));
+					let fields_array_ty = values.intern_trivial(&value::Key::Type(value::Type::Array(value::TypeArray {
+						elem_ty: field_ty,
+						len: field_values.len() as u64,
+					})));
+					let fields_array = values.intern_trivial(&value::Key::Aggregate {
+						ty: fields_array_ty,
+						values: field_values,
+					});
+					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let fields_decl = self.cu.decls.lock().push(Decl {
+						name: format!("__vif_const_{}", fields_array.as_u32()).as_str().into(),
+						module: self.module,
+						namespace,
+						analysis_state: DeclAnalysisState::Analysed { value: fields_array },
+					});
+					let fields_ptr_ty = values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
+						pointee_ty: field_ty,
+						packed: None,
+						is_const: true,
+					})));
+					let fields_ptr = values.intern_trivial(&value::Key::Ptr(Ptr {
+						ty: fields_ptr_ty,
+						kind: PtrKind::Decl(fields_decl),
+					}));
+					let fields_len = values.intern_trivial(&value::Key::Int {
+						ty: values.common.usize_t,
+						value: Anyint::from(field_values.len()).into(),
+					});
+					let fields_slice = values.intern_trivial(&value::Key::Slice {
+						ty: fields_slice_ty,
+						ptr: fields_ptr,
+						len: fields_len,
+					});
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(r#struct.fields.len() as u32).into(),
+						}),
+						values.intern_trivial(&value::Key::Bool(r#struct.linear)),
+						fields_slice,
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::Enum(_) => {
+					let payload_ty = kind_ty_union.fields[15].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 15);
+					let value::Value::Enum(r#enum) = values.index_to_value(ty) else {
+						unreachable!("enum type without enum value")
+					};
+					let r#enum = r#enum.as_ref();
+					let variant_values = self.cu.values.alloc_slice_fill_iter(r#enum.fields.iter().map(|field| {
+						let name = values.intern_trivial(&value::Key::Str {
+							slice_ty: str_slice_ty,
+							value: Intern::from(field.name.as_bytes()),
+						});
+						let value = values.index_to_key(field.value).as_int().1;
+						values.intern_trivial(&value::Key::Aggregate {
+							ty: variant_ty,
+							values: self.cu.values.alloc_slice(&[
+								name,
+								values.intern_trivial(&value::Key::Int {
+									ty: values.common.usize_t,
+									value: *value,
+								}),
+							]),
+						})
+					}));
+					let variants_slice_ty =
+						values.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: variant_ty })));
+					let variants_array_ty = values.intern_trivial(&value::Key::Type(value::Type::Array(value::TypeArray {
+						elem_ty: variant_ty,
+						len: variant_values.len() as u64,
+					})));
+					let variants_array = values.intern_trivial(&value::Key::Aggregate {
+						ty: variants_array_ty,
+						values: variant_values,
+					});
+					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let variants_decl = self.cu.decls.lock().push(Decl {
+						name: format!("__vif_const_{}", variants_array.as_u32()).as_str().into(),
+						module: self.module,
+						namespace,
+						analysis_state: DeclAnalysisState::Analysed { value: variants_array },
+					});
+					let variants_ptr_ty = values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
+						pointee_ty: variant_ty,
+						packed: None,
+						is_const: true,
+					})));
+					let variants_ptr = values.intern_trivial(&value::Key::Ptr(Ptr {
+						ty: variants_ptr_ty,
+						kind: PtrKind::Decl(variants_decl),
+					}));
+					let variants_len = values.intern_trivial(&value::Key::Int {
+						ty: values.common.usize_t,
+						value: Anyint::from(variant_values.len()).into(),
+					});
+					let variants_slice = values.intern_trivial(&value::Key::Slice {
+						ty: variants_slice_ty,
+						ptr: variants_ptr,
+						len: variants_len,
+					});
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(reference_type(self, r#enum.tag_ty)).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(r#enum.fields.len() as u32).into(),
+						}),
+						values.intern_trivial(&value::Key::Bool(r#enum.linear)),
+						variants_slice,
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+				value::Type::Union(_) => {
+					let payload_ty = kind_ty_union.fields[16].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 16);
+					let value::Value::Union(r#union) = values.index_to_value(ty) else {
+						unreachable!("union type without union value")
+					};
+					let r#union = r#union.as_ref();
+					let union_layout = values.type_union_layout(&self.cu.resolved_target, ty);
+					let (tag_offset, payload_offset) = if union_layout.tag.size == 0 || union_layout.payload.size == 0 {
+						(0u64, 0u64)
+					} else if union_layout.tag.align >= union_layout.payload.align {
+						(0u64, union_layout.tag.size.next_multiple_of(union_layout.payload.align))
+					} else {
+						(union_layout.payload.size.next_multiple_of(union_layout.tag.align), 0u64)
+					};
+					let field_values = self.cu.values.alloc_slice_fill_iter(r#union.fields.iter().map(|field| {
+						let name = values.intern_trivial(&value::Key::Str {
+							slice_ty: str_slice_ty,
+							value: Intern::from(field.name.as_bytes()),
+						});
+						let field_ty_id = field.ty.unwrap_or(values.common.void_t);
+						let offset = if field.ty.is_some() { payload_offset } else { 0 };
+						values.intern_trivial(&value::Key::Aggregate {
+							ty: field_ty,
+							values: self.cu.values.alloc_slice(&[
+								name,
+								values.intern_trivial(&value::Key::Int {
+									ty: values.common.u32_t,
+									value: Anyint::from(reference_type(self, field_ty_id)).into(),
+								}),
+								values.intern_trivial(&value::Key::Int {
+									ty: values.common.usize_t,
+									value: Anyint::from(offset).into(),
+								}),
+							]),
+						})
+					}));
+					let fields_slice_ty = values.intern_trivial(&value::Key::Type(value::Type::Slice(TypeSlice { pointee_ty: field_ty })));
+					let fields_array_ty = values.intern_trivial(&value::Key::Type(value::Type::Array(value::TypeArray {
+						elem_ty: field_ty,
+						len: field_values.len() as u64,
+					})));
+					let fields_array = values.intern_trivial(&value::Key::Aggregate {
+						ty: fields_array_ty,
+						values: field_values,
+					});
+					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let fields_decl = self.cu.decls.lock().push(Decl {
+						name: format!("__vif_const_{}", fields_array.as_u32()).as_str().into(),
+						module: self.module,
+						namespace,
+						analysis_state: DeclAnalysisState::Analysed { value: fields_array },
+					});
+					let fields_ptr_ty = values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
+						pointee_ty: field_ty,
+						packed: None,
+						is_const: true,
+					})));
+					let fields_ptr = values.intern_trivial(&value::Key::Ptr(Ptr {
+						ty: fields_ptr_ty,
+						kind: PtrKind::Decl(fields_decl),
+					}));
+					let fields_len = values.intern_trivial(&value::Key::Int {
+						ty: values.common.usize_t,
+						value: Anyint::from(field_values.len()).into(),
+					});
+					let fields_slice = values.intern_trivial(&value::Key::Slice {
+						ty: fields_slice_ty,
+						ptr: fields_ptr,
+						len: fields_len,
+					});
+					let payload = self.cu.values.alloc_slice(&[
+						values.intern_trivial(&value::Key::Bool(r#union.tag_ty.is_some())),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(reference_type(self, r#union.tag_ty.unwrap_or(values.common.void_t))).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.usize_t,
+							value: Anyint::from(tag_offset).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.usize_t,
+							value: Anyint::from(payload_offset).into(),
+						}),
+						values.intern_trivial(&value::Key::Int {
+							ty: values.common.u32_t,
+							value: Anyint::from(r#union.fields.len() as u32).into(),
+						}),
+						values.intern_trivial(&value::Key::Bool(r#union.linear)),
+						fields_slice,
+					]);
+					let val = values.intern_trivial(&value::Key::Aggregate {
+						ty: payload_ty,
+						values: payload,
+					});
+					values.intern_trivial(&value::Key::Union {
+						ty: kind_ty,
+						tag: Some(tag),
+						payload: Some(val),
+					})
+				},
+
+				value::Type::NullPtr | value::Type::GenericPoison | value::Type::EnumLiteral => {
+					unreachable!()
+				},
+			}
+		};
+
+		// TODO(zino): --rtti-strip-names
+		let name = format!("{}", values.display_index(ty));
+
+		// now insert to the type infos
+		let index = self.cu.type_to_type_info_id.entry(&ty).or_insert_with(|| {
+			let type_info_id = self.cu.type_info_entries.push(value::Index::NONE);
+			let type_info = self.cu.values.alloc_slice(&[
+				// id
+				values.intern_trivial(&value::Key::Int {
+					ty: values.common.u32_t,
+					value: Anyint::from(type_info_id.0 as u32).into(),
+				}),
+				// name
+				values.intern_trivial(&value::Key::Str {
+					slice_ty: str_slice_ty,
+					value: Intern::from(name.as_bytes()),
+				}),
+				// size
+				values.intern_trivial(&value::Key::Int {
+					ty: values.common.usize_t,
+					value: Anyint::from(ty_layout.size).into(),
+				}),
+				// kind
+				kind,
+			]);
+			let type_info = values.intern_trivial(&value::Key::Aggregate {
+				ty: type_info_ty,
+				values: type_info,
+			});
+			unsafe {
+				self.cu.type_info_entries.replace(type_info_id, type_info);
+			}
+			type_info_id
+		});
+
+		Ok(self.cu.type_to_type_info_id.kv(index).1.load(std::sync::atomic::Ordering::Relaxed))
+	}
+
 	#[must_use = "coerce return the coerced instruction / value"]
 	#[track_caller]
 	fn coerce(
@@ -4397,12 +5182,14 @@ impl<'a> Sema<'a> {
 				(_, value::Key::Type(value::Type::Type)) if self.cu.values.index_to_key(inst_ty).is_type() => Ok(inst),
 				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Anyptr)) if !self.blocks[block].comptime => {
 					let concrete = self.coerce(block, self.cu.values.common.i32_t, inst, span)?;
+					let _ = self.analyze_type_info(self.cu.values.common.i32_t)?;
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
 						value: concrete,
 						value_ty: self.cu.values.common.i32_t,
 					}))
 				},
 				(_, value::Key::Type(value::Type::Anyptr)) if !self.cu.values.type_is_comptime_only(inst_ty) => {
+					let _ = self.analyze_type_info(inst_ty)?;
 					Ok(self.inst(block, vtir::Opcode::AnyptrInit {
 						value: inst,
 						value_ty: inst_ty,
