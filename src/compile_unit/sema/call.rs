@@ -319,7 +319,6 @@ impl<'a> Sema<'a> {
 							continue 'arg_loop;
 						},
 						Err(_) => {
-							todo!();
 							return Err(AnalyzeError::AnalysisFailed);
 						},
 					}

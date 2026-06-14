@@ -306,7 +306,12 @@ pub enum CallingConvention {
 	C,
 	Fast,
 	Cold,
+
 	X86_64Windows,
+	X86_64SysV,
+
+	Aarch64Darwin,
+	Aarch64Win,
 
 	Count,
 }

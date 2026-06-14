@@ -116,6 +116,8 @@ struct LlvmAttributes {
 	byval: Attribute,
 	noalias: Attribute,
 	nonnull: Attribute,
+	signext: Attribute,
+	zeroext: Attribute,
 }
 
 impl LlvmAttributes {
@@ -141,6 +143,8 @@ impl LlvmAttributes {
 			byval: enum_attr!("byval"),
 			noalias: enum_attr!("noalias"),
 			nonnull: enum_attr!("nonnull"),
+			signext: enum_attr!("signext"),
+			zeroext: enum_attr!("zeroext"),
 		}
 	}
 }
@@ -472,7 +476,7 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 			vtir::Opcode::Return { value } => {
 				let fn_ty = self.lowerer.compilation_unit.values.index_to_key(self.cur_fn_ty).as_type_fn();
 				let ret_repr = self.lowerer.compute_fn_ret_ty_abi_repr(fn_ty);
-				if ret_repr == abi::Repr::ByRef {
+				if matches!(ret_repr, abi::Repr::ByRef) {
 					let ret_ptr = self.cur_fn.unwrap().get_nth_param(0).unwrap();
 					if let Some(value) = value
 						&& vtir.type_of(&self.compilation_unit.values, value) != self.compilation_unit.values.common.void_t
@@ -507,10 +511,11 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 									.type_layout(&self.compilation_unit.resolved_target, value_ty);
 								let int_ty = self.lowerer.ctx.custom_width_int_type((layout.size * 8) as _);
 								if self.lowerer.vif_abi_type_is_by_ref(value_ty) {
-									self.builder().build_load(int_ty, value.into_pointer_value(), "ret.asinteger")?
+									let value = self.builder().build_load(int_ty, value.into_pointer_value(), "ret.asinteger")?;
+									value.as_instruction_value().unwrap().set_alignment(layout.align as u32).unwrap();
+									value
 								} else {
-									let value_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(value_ty);
-									let storage = self.build_alloca_at_top_of_bb(value_ty_llvm, "ret.asinteger.storage")?;
+									let storage = self.build_alloca_at_top_of_bb(int_ty, "ret.asinteger")?;
 									self.builder().build_store(storage, value)?;
 									self.builder().build_load(int_ty, storage, "ret.asinteger")?
 								}
@@ -568,17 +573,25 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 								}
 							},
 							abi::Repr::AsInteger => {
-								let arg_ty_layout = self
+								let repr = self.lowerer.compute_fn_param_abi_repr(fn_ty, arg_ty);
+								let abi::Repr::AsInteger = repr else {
+									unreachable!("non-integer ABI repr in AsInteger lowering path")
+								};
+								let layout = self
 									.compilation_unit
 									.values
 									.type_layout(&self.compilation_unit.resolved_target, arg_ty);
-								let int_ty = self.lowerer.ctx.custom_width_int_type((arg_ty_layout.size * 8) as _);
+								let int_ty = self.lowerer.ctx.custom_width_int_type((layout.size * 8) as _);
 								if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
-									self.builder().build_load(int_ty, arg.into_pointer_value(), "")?
+									let arg = self
+										.builder()
+										.build_load(int_ty, arg.into_pointer_value(), "call.arg.abi.asinteger")?;
+									arg.as_instruction_value().unwrap().set_alignment(layout.align as u32).unwrap();
+									arg
 								} else {
-									let alloca = self.build_alloca_at_top_of_bb(int_ty, "call.arg.abi.asinteger")?;
-									self.builder().build_store(alloca, arg)?;
-									self.builder().build_load(int_ty, alloca, "")?
+									let storage = self.build_alloca_at_top_of_bb(int_ty, "call.arg.abi.asinteger")?;
+									self.builder().build_store(storage, arg)?;
+									self.builder().build_load(int_ty, storage, "call.arg.abi.asinteger")?
 								}
 							},
 						};
@@ -594,7 +607,37 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					_ => unreachable!("FnCall callee must lower to a function or function pointer"),
 				};
 
-				val.set_call_convention(self.lowerer.llvm_callconv_id(callconv) as u32);
+				if let Some(callconv) = self.lowerer.llvm_callconv_id(fn_ty.callconv) {
+					val.set_call_convention(callconv as u32);
+				}
+				if sret {
+					val.add_attribute(AttributeLoc::Param(0), self.lowerer.attributes.sret);
+					val.add_attribute(AttributeLoc::Param(0), self.lowerer.attributes.noalias);
+					val.add_attribute(AttributeLoc::Param(0), self.lowerer.attributes.nonnull);
+				}
+				for (i, &param_ty) in fn_ty
+					.params
+					.iter()
+					.enumerate()
+					.filter(|&(i, _)| !fn_ty.comptime_params[i])
+					.map(|(_, ty)| ty)
+					.enumerate()
+				{
+					let llvm_param_idx = if sret { 1 } else { 0 } + i as u32;
+					match self.lowerer.compute_fn_param_abi_repr(fn_ty, param_ty) {
+						abi::Repr::ByRef => {
+							let param_ty_llvm = self.lowerer.lower_type(param_ty);
+							let byval_attr = self
+								.lowerer
+								.ctx
+								.create_type_attribute(self.lowerer.attributes.byval.get_enum_kind_id(), param_ty_llvm);
+							val.add_attribute(AttributeLoc::Param(llvm_param_idx), byval_attr);
+							val.add_attribute(AttributeLoc::Param(llvm_param_idx), self.lowerer.attributes.noalias);
+							val.add_attribute(AttributeLoc::Param(llvm_param_idx), self.lowerer.attributes.nonnull);
+						},
+						abi::Repr::ByValue | abi::Repr::AsInteger => {},
+					}
+				}
 
 				// if we have a ret_ptr, the actual val we returns for this call is a load to this pointer
 				let ret_repr = self.lowerer.compute_fn_ret_ty_abi_repr(fn_ty);
@@ -605,10 +648,10 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					} else {
 						self.build_load(fn_ty.ret_ty, ret_ptr)?
 					}
-				} else if ret_repr == abi::Repr::AsInteger {
-					let ret_ty: BasicTypeEnum = self.lowerer.lower_type_basic(fn_ty.ret_ty);
+				} else if matches!(ret_repr, abi::Repr::AsInteger) {
 					let abi_value = val.try_as_basic_value().unwrap_basic();
-					let storage = self.build_alloca_at_top_of_bb(ret_ty, "call.ret.asinteger")?;
+					let ret_ty = self.lowerer.lower_type_basic(fn_ty.ret_ty);
+					let storage = self.build_alloca_at_top_of_bb(abi_value.get_type(), "call.ret.asinteger")?;
 					self.builder().build_store(storage, abi_value)?;
 					if self.lowerer.vif_abi_type_is_by_ref(fn_ty.ret_ty) {
 						storage.as_any_value_enum()
@@ -1794,14 +1837,13 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					}
 				},
 				abi::Repr::AsInteger => {
-					let arg_ty_llvm: BasicTypeEnum = self.lowerer.lower_type_basic(arg_ty);
-					let alloca = self.build_alloca_at_top_of_bb(arg_abi_ty, "fn.arg.asinteger")?;
-					self.builder().build_store(alloca, arg)?;
-
+					let arg_ty_llvm = self.lowerer.lower_type_basic(arg_ty);
+					let storage = self.build_alloca_at_top_of_bb(arg.get_type(), "fn.arg.asinteger")?;
+					self.builder().build_store(storage, arg)?;
 					if self.lowerer.vif_abi_type_is_by_ref(arg_ty) {
-						alloca.into()
+						storage.into()
 					} else {
-						self.builder().build_load(arg_ty_llvm, alloca, "")?
+						self.builder().build_load(arg_ty_llvm, storage, "fn.arg.frominteger")?
 					}
 				},
 			};
@@ -1929,13 +1971,17 @@ impl<'ctx> Lowerer<'ctx> {
 	fn llvm_callconv_id(
 		&self,
 		callconv: CallingConvention,
-	) -> llvm_sys::LLVMCallConv {
+	) -> Option<llvm_sys::LLVMCallConv> {
 		match callconv {
-			CallingConvention::Vif => llvm_sys::LLVMCallConv::LLVMFastCallConv,
-			CallingConvention::C => llvm_sys::LLVMCallConv::LLVMCCallConv,
-			CallingConvention::Fast => llvm_sys::LLVMCallConv::LLVMFastCallConv,
-			CallingConvention::Cold => llvm_sys::LLVMCallConv::LLVMColdCallConv,
-			CallingConvention::X86_64Windows => llvm_sys::LLVMCallConv::LLVMWin64CallConv,
+			CallingConvention::Vif => Some(llvm_sys::LLVMCallConv::LLVMFastCallConv),
+			CallingConvention::C => Some(llvm_sys::LLVMCallConv::LLVMCCallConv),
+			CallingConvention::Fast => Some(llvm_sys::LLVMCallConv::LLVMFastCallConv),
+			CallingConvention::Cold => Some(llvm_sys::LLVMCallConv::LLVMColdCallConv),
+
+			CallingConvention::X86_64Windows => Some(llvm_sys::LLVMCallConv::LLVMWin64CallConv),
+			CallingConvention::X86_64SysV => Some(llvm_sys::LLVMCallConv::LLVMX8664SysVCallConv),
+
+			CallingConvention::Aarch64Darwin | CallingConvention::Aarch64Win => None,
 
 			CallingConvention::Count => unreachable!(),
 		}
@@ -2439,7 +2485,7 @@ impl<'ctx> Lowerer<'ctx> {
 				value::Key::Type(value::Type::Fn(_)) => {
 					let fn_ty = self.compilation_unit.values.index_to_key(index).as_type_fn();
 					let ret_repr = self.compute_fn_ret_ty_abi_repr(fn_ty);
-					let sret = ret_repr == abi::Repr::ByRef;
+					let sret = matches!(ret_repr, abi::Repr::ByRef);
 
 					let mut params = Vec::<BasicMetadataTypeEnum>::with_capacity(if sret { 1 } else { 0 } + fn_ty.params.len());
 					if sret {
@@ -2618,7 +2664,9 @@ impl<'ctx> Lowerer<'ctx> {
 			)
 		};
 
-		llvm_fn_value.set_call_conventions(self.llvm_callconv_id(fn_ty.callconv) as u32);
+		if let Some(callconv) = self.llvm_callconv_id(fn_ty.callconv) {
+			llvm_fn_value.set_call_conventions(callconv as u32);
+		}
 
 		// attributes
 
@@ -2632,7 +2680,14 @@ impl<'ctx> Lowerer<'ctx> {
 		}
 
 		// params attrs
-		for (i, &param_ty) in fn_ty.params.iter().enumerate().filter(|&(i, _)| !fn_ty.comptime_params[i]) {
+		for (i, &param_ty) in fn_ty
+			.params
+			.iter()
+			.enumerate()
+			.filter(|&(i, _)| !fn_ty.comptime_params[i])
+			.map(|(_, ty)| ty)
+			.enumerate()
+		{
 			let llvm_param_idx = if sret { 1 } else { 0 } + i as u32;
 			match self.compute_fn_param_abi_repr(fn_ty, param_ty) {
 				abi::Repr::ByRef => {
@@ -2872,7 +2927,13 @@ impl<'ctx> Lowerer<'ctx> {
 					abi::Repr::ByValue
 				}
 			},
-			CallingConvention::C | CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, param_ty),
+			CallingConvention::C => abi::compute_type_abi_c(self.compilation_unit, param_ty, abi::Context::Param),
+			CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, param_ty, abi::Context::Param),
+			CallingConvention::X86_64SysV => abi::x86_64::compute_type_abi_sysv(self.compilation_unit, param_ty),
+
+			CallingConvention::Aarch64Darwin | CallingConvention::Aarch64Win => {
+				abi::aarch64::compute_type_abi_darwin(self.compilation_unit, param_ty, abi::Context::Param)
+			},
 
 			CallingConvention::Count => unreachable!(),
 		}
@@ -2891,9 +2952,15 @@ impl<'ctx> Lowerer<'ctx> {
 					abi::Repr::ByValue
 				}
 			},
-			CallingConvention::C | CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, fn_ty.ret_ty),
-			CallingConvention::Cold | CallingConvention::Fast => todo!(),
+			CallingConvention::C => abi::compute_type_abi_c(self.compilation_unit, fn_ty.ret_ty, abi::Context::Return),
+			CallingConvention::X86_64Windows => abi::compute_type_abi_win64(self.compilation_unit, fn_ty.ret_ty, abi::Context::Return),
+			CallingConvention::X86_64SysV => abi::x86_64::compute_type_abi_sysv(self.compilation_unit, fn_ty.ret_ty),
 
+			CallingConvention::Aarch64Darwin | CallingConvention::Aarch64Win => {
+				abi::aarch64::compute_type_abi_darwin(self.compilation_unit, fn_ty.ret_ty, abi::Context::Return)
+			},
+
+			CallingConvention::Cold | CallingConvention::Fast => todo!(),
 			CallingConvention::Count => unreachable!(),
 		}
 	}

@@ -17,6 +17,9 @@ fn for_each_file(
 ) {
 	let content = std::fs::read_to_string(&path).unwrap();
 	let fixture = TestFixture::parse(&content);
+	if fixture.arch.as_deref().is_some_and(|arch| arch != std::env::consts::ARCH) {
+		return;
+	}
 
 	let mut stdout = Vec::new();
 	let mut stderr = Vec::new();
@@ -63,6 +66,7 @@ fn for_each_file(
 #[derive(PartialEq, Debug, Default)]
 pub struct TestFixture {
 	pub args: Vec<String>,
+	pub arch: Option<String>,
 	pub expected_stdout: Option<String>,
 	pub expected_stderr: Option<String>,
 }
@@ -100,6 +104,7 @@ impl TestFixture {
 						"args" => {
 							fixture.args = value.split_whitespace().map(String::from).collect();
 						},
+						"arch" => fixture.arch = Some(value.to_string()),
 						"stdout" | "stderr" => {
 							current_section = Some(key.to_string());
 						},

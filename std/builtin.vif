@@ -1,11 +1,11 @@
 /// Builtin types and constants that are not injected directly as prelude symbols.
 
+const builtin = @Self()
 const Target = @import("Target.vif")
 
 /// Calling conventions, should be in sync with compiler internals.
 pub const CallingConvention = enum(u8) {
-	// TODO(zino): ARM64
-	pub const winapi: CallingConvention = .x86_64_windows
+	pub const winapi: CallingConvention = if (builtin.target.arch == .aarch64) .aarch64_win else .x86_64_windows
 
 	vif,
 	c,
@@ -13,7 +13,11 @@ pub const CallingConvention = enum(u8) {
 	cold,
 
 	/// https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions
-	x86_64_windows
+	x86_64_windows,
+	x86_64_sysv,
+
+	aarch64_darwin,
+	aarch64_win,
 }
 
 /// Describe a Type

@@ -5588,10 +5588,9 @@ impl<'a> Sema<'a> {
 	/// Promotes a variadic argument to the appropriate C ABI type.
 	///
 	/// C varargs require specific type promotions:
-	/// - Integers smaller than 64 bits → i64/u64 (preserving signedness)
+	/// - bool and integers smaller than 32 bits → i32
 	/// - f16, f32 → f64
-	/// - isize/usize → i64/u64
-	/// - f64, bool, i64, u64 → unchanged
+	/// - all other runtime integers and pointers → unchanged
 	///
 	/// Returns the promoted instruction and its type, or an error if the type
 	/// cannot be used as a variadic argument.
@@ -5606,25 +5605,20 @@ impl<'a> Sema<'a> {
 			unreachable!("variadic argument type is not a type")
 		};
 		match ty {
-			// Types that need no promotion
-			value::Type::F64 | value::Type::Bool => Ok((resolved_value, arg_ty)),
-			value::Type::Int { bits: 64, .. } => Ok((resolved_value, arg_ty)),
+			value::Type::F64 | value::Type::Ptr(_) | value::Type::Isize | value::Type::Usize | value::Type::Int { bits: 32..=64, .. } => {
+				Ok((resolved_value, arg_ty))
+			},
 
-			// sauf quand les ptr sont fatos
-			value::Type::Ptr(_) => Ok((resolved_value, arg_ty)),
-
-			// isize/usize → i64/u64
-			value::Type::Isize | value::Type::Usize => {
-				let dst_ty = if *ty == value::Type::Usize {
-					self.cu.values.common.u64_t
-				} else {
-					self.cu.values.common.i64_t
-				};
+			value::Type::Bool => {
+				let dst_ty = self.cu.values.common.i32_t;
 				let promoted = if let Some(value) = self.try_resolve_comptime_value(&resolved_value) {
-					let value::Key::Int { value, .. } = self.cu.values.index_to_key(value) else {
-						unreachable!("isize/usize comptime value must be Int");
+					let value::Key::Bool(value) = self.cu.values.index_to_key(value) else {
+						unreachable!("bool comptime value must be Bool");
 					};
-					InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Int { ty: dst_ty, value: *value }))
+					InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Int {
+						ty: dst_ty,
+						value: Anyint::from(u8::from(*value)).into(),
+					}))
 				} else {
 					self.inst(block, vtir::Opcode::UnsafeIntCast {
 						src: resolved_value,
@@ -5635,8 +5629,7 @@ impl<'a> Sema<'a> {
 				Ok((promoted, promoted_ty))
 			},
 
-			// Integers 1-63 bits → i64/u64 (preserving signedness)
-			value::Type::Int { signed, bits } => {
+			value::Type::Int { bits, .. } => {
 				if *bits > 64 {
 					self.push_error(
 						Diagnostic::error()
@@ -5645,11 +5638,7 @@ impl<'a> Sema<'a> {
 					);
 					return Err(AnalyzeError::AnalysisFailed);
 				}
-				let dst_ty = if *signed {
-					self.cu.values.common.i64_t
-				} else {
-					self.cu.values.common.u64_t
-				};
+				let dst_ty = self.cu.values.common.i32_t;
 				let promoted = if let Some(value) = self.try_resolve_comptime_value(&resolved_value) {
 					let value::Key::Int { value, .. } = self.cu.values.index_to_key(value) else {
 						unreachable!("int comptime value must be Int");
