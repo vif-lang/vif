@@ -8,7 +8,6 @@ use crate::{
 	run_from_args,
 };
 
-// NOTE: rstest expands the fixture file list when this module is compiled.
 #[rstest]
 fn for_each_file(
 	#[files("**/*.vif")]

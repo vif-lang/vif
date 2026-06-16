@@ -18,7 +18,7 @@ fn score(state: State) usize {
 }
 
 fn main() void {
-    printf(std.slice.ptr("%u\n"), score(State.Start) + score(State.Middle) + score(State.End))
+    printf(std.slice.ptr(u8, "%u\n"), score(State.Start) + score(State.Middle) + score(State.End))
 }
 
 //@ args: run

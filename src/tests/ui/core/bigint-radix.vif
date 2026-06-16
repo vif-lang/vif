@@ -6,7 +6,7 @@ fn main() void {
     comptime const b = 0b10000000000000000000000000000000000000000000000000000000000000000
     comptime const c: u8 = (a >> 128) + (b >> 64)
     var x: u8 = c
-    printf(std.slice.ptr("%u\n"), x)
+    printf(std.slice.ptr(u8, "%u\n"), x)
 }
 
 //@ args: run

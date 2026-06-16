@@ -182,7 +182,6 @@ impl Vuir {
 					Opcode::FnCallWithFieldPtrReceiver {
 						field_ptr,
 						field_name,
-						generic_args,
 						args,
 						ret_ty,
 						span,
@@ -191,8 +190,8 @@ impl Vuir {
 
 						write!(
 							self.stream,
-							"FnCallWithFieldPtrReceiver {{ field_ptr: {:?}, field_name: {:?}, generic_args: {:?}, args = [",
-							field_ptr, field_name, generic_args
+							"FnCallWithFieldPtrReceiver {{ field_ptr: {:?}, field_name: {:?}, args = [",
+							field_ptr, field_name
 						)?;
 
 						for arg in args.iter() {

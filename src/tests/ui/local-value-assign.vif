@@ -23,7 +23,7 @@ fn main() void {
     add_to_x(&s, 5)   // expected s.x = 15
     copy_x_to_y(&s)   // expected s.y = 15
     // expected: x=15 y=15
-    printf(std.slice.ptr("x=%d y=%d\n"), s.x, s.y)
+    printf(std.slice.ptr(u8, "x=%d y=%d\n"), s.x, s.y)
 }
 
 //@ args: build

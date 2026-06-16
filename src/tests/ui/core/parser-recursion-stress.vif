@@ -91,7 +91,7 @@ fn stress_parse_depth() i32 {
 }
 
 fn main() void {
-    printf(std.slice.ptr("%d %d\n"), STRESS_VALUE, stress_parse_depth())
+    printf(std.slice.ptr(u8, "%d %d\n"), STRESS_VALUE, stress_parse_depth())
 }
 
 //@ args: run

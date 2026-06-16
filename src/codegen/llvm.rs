@@ -1209,7 +1209,6 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 					| value::Type::Slice(_)
 					| value::Type::Array(_)
 					| value::Type::NullPtr
-					| value::Type::Any
 					| value::Type::Anyptr
 					| value::Type::GenericPoison
 					| value::Type::Type
@@ -1959,7 +1958,6 @@ impl<'ctx> Lowerer<'ctx> {
 			| value::Type::Ptr(_)
 			| value::Type::Slice(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
 			| value::Type::GenericPoison
 			| value::Type::Type
@@ -2282,7 +2280,6 @@ impl<'ctx> Lowerer<'ctx> {
 					| value::Type::Ptr(_)
 					| value::Type::Slice(_)
 					| value::Type::NullPtr
-					| value::Type::Any
 					| value::Type::Anyptr
 					| value::Type::GenericPoison
 					| value::Type::Type
@@ -2338,7 +2335,6 @@ impl<'ctx> Lowerer<'ctx> {
 			| value::Key::Void
 			| value::Key::Unreachable
 			| value::Key::Type(_)
-			| value::Key::GenericPoison { .. }
 			| value::Key::DeclRef { .. }
 			| value::Key::FnDecl(_)
 			| value::Key::EnumLiteral(_) => {
@@ -2372,7 +2368,6 @@ impl<'ctx> Lowerer<'ctx> {
 			| value::Key::Void
 			| value::Key::Unreachable
 			| value::Key::Union { .. }
-			| value::Key::GenericPoison { .. }
 			| value::Key::DeclRef { .. }
 			| value::Key::FnDecl(_)
 			| value::Key::EnumLiteral(_) => unreachable!("{key:?} is not a type"),
@@ -2458,7 +2453,6 @@ impl<'ctx> Lowerer<'ctx> {
 			| value::Type::Void
 			| value::Type::Fn(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
@@ -2547,7 +2541,6 @@ impl<'ctx> Lowerer<'ctx> {
 								| value::Type::Slice(_)
 								| value::Type::Array(_)
 								| value::Type::NullPtr
-								| value::Type::Any
 								| value::Type::Anyptr
 								| value::Type::GenericPoison
 								| value::Type::Type
@@ -2577,7 +2570,6 @@ impl<'ctx> Lowerer<'ctx> {
 					| value::Type::Slice(_)
 					| value::Type::Array(_)
 					| value::Type::NullPtr
-					| value::Type::Any
 					| value::Type::Anyptr
 					| value::Type::GenericPoison
 					| value::Type::Type
@@ -2598,7 +2590,6 @@ impl<'ctx> Lowerer<'ctx> {
 				| value::Key::Void
 				| value::Key::Unreachable
 				| value::Key::Union { .. }
-				| value::Key::GenericPoison { .. }
 				| value::Key::DeclRef { .. }
 				| value::Key::FnDecl(_)
 				| value::Key::EnumLiteral(_) => unreachable!("cannot lower {key:?} as an LLVM type"),

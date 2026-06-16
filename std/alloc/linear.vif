@@ -21,8 +21,8 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 		fn new(backing_allocator: backing_allocator_ty) Self {
 			return .{
 				.backing_allocator = backing_allocator,
-				.first_block = @nullptr(),
-				.cur_block = @nullptr(),
+				.first_block = @nullptr(*Block),
+				.cur_block = @nullptr(*Block),
 				.cur_offset = 0,
 			}
 		}
@@ -34,18 +34,18 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 			const total: usize = @size_of(Block) + block_size_in_bytes
 			const raw: []u8 = self.backing_allocator.allocate(total)
 
-			const block_addr: usize = @ptr_to_int(slice.ptr(raw))
-			const block: *Block = @int_to_ptr(block_addr)
+			const block_addr: usize = @ptr_to_int(*const u8, slice.ptr(u8, raw))
+			const block: *Block = @int_to_ptr(*Block, block_addr)
 
 			const data_addr: usize = block_addr + @size_of(Block)
-			const data_ptr: *const u8 = @int_to_ptr(data_addr)
-			block.data = slice.from_raw_parts(data_ptr, block_size_in_bytes)
+			const data_ptr: *const u8 = @int_to_ptr(*const u8, data_addr)
+			block.data = slice.from_raw_parts(u8, data_ptr, block_size_in_bytes)
 			block.next = 0
 
-			if self.first_block == @nullptr($T: *Block) {
+			if self.first_block == @nullptr(*Block) {
 				self.first_block = block
 			} else {
-				self.cur_block.next = @ptr_to_int(block)
+				self.cur_block.next = @ptr_to_int(*Block, block)
 			}
 			self.cur_block = block
 			self.cur_offset = 0
@@ -54,18 +54,18 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 		/// Carve `size_in_bytes` bytes out of the current block, growing if needed.
 		fn allocate(self: *Self, size_in_bytes: usize) []u8 {
 			const needs_new_block: bool =
-				self.cur_block == @nullptr($T: *Block) or
+				self.cur_block == @nullptr(*Block) or
 				self.cur_offset + size_in_bytes > block_size_in_bytes
 
 			if needs_new_block {
 				self.grow()
 			}
 
-			const base_addr: usize = @ptr_to_int(slice.ptr(self.cur_block.data))
+			const base_addr: usize = @ptr_to_int(*const u8, slice.ptr(u8, self.cur_block.data))
 			const alloc_addr: usize = base_addr + self.cur_offset
-			const alloc_ptr: *const u8 = @int_to_ptr(alloc_addr)
+			const alloc_ptr: *const u8 = @int_to_ptr(*const u8, alloc_addr)
 			self.cur_offset = self.cur_offset + size_in_bytes
-			return slice.from_raw_parts(alloc_ptr, size_in_bytes)
+			return slice.from_raw_parts(u8, alloc_ptr, size_in_bytes)
 		}
 
 		fn deallocate(self: *Self, alloc: []const u8) void {
@@ -76,15 +76,15 @@ fn Allocator(comptime backing_allocator_ty: type, comptime block_size_in_bytes: 
 		fn deinit(self: *Self) void {
 			var block: *Block = self.first_block
 			//TODO WHILE LOOP
-			//while block != @nullptr($T: *Block) {
+			//while block != @nullptr(*Block) {
 			//    const next_addr: usize = block.next
-			//    const raw_ptr: *const u8 = @int_to_ptr(@ptr_to_int(block))
+			//    const raw_ptr: *const u8 = @int_to_ptr(*const u8, @ptr_to_int(*Block, block))
 			//    const total: usize = @size_of(Block) + block_size_in_bytes
-			//     self.backing_allocator.deallocate(slice.from_raw_parts(raw_ptr, total))
-			//    block = @int_to_ptr(next_addr)
+			//     self.backing_allocator.deallocate(slice.from_raw_parts(u8, raw_ptr, total))
+			//    block = @int_to_ptr(*Block, next_addr)
 			//}
-			self.first_block = @nullptr()
-			self.cur_block = @nullptr()
+			self.first_block = @nullptr(*Block)
+			self.cur_block = @nullptr(*Block)
 			self.cur_offset = 0
 		}
 	}

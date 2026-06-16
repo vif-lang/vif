@@ -345,6 +345,8 @@ tokens! {
 	Hash = "#",
 	/// `.`
 	Dot = ".",
+	// `_`
+	Underscore = "_",
 
 	/// `-=`
 	MinusEq = "-=",
@@ -487,7 +489,6 @@ tokens! {
 	TyBool = "bool",
 	TyVoid = "void",
 	TyNever = "never",
-	TyAny = "any",
 	TyAnyptr = "anyptr",
 	TyAnyint = "anyint",
 	TyAnyfloat = "anyfloat",
@@ -670,6 +671,7 @@ impl<'src> Lexer<'src> {
 
 			Dot,
 			DotDot,
+			Underscore,
 
 			Backslash,
 
@@ -835,6 +837,11 @@ impl<'src> Lexer<'src> {
 								kind = TokenKind::Dot;
 								#[const_continue]
 								break 'state Dot;
+							},
+							b'_' => {
+								kind = TokenKind::Underscore;
+								#[const_continue]
+								break 'state Underscore;
 							},
 							b'\\' => {
 								#[const_continue]
@@ -1128,7 +1135,7 @@ impl<'src> Lexer<'src> {
 						chr if char_class::is_ident_start(chr) => {
 							kind = TokenKind::Ident {
 								symbol: COMMON_INTERNS.empty_str,
-								kind: IdentKind::Generic,
+								kind: IdentKind::UserComptime,
 							};
 
 							#[const_continue]
@@ -1253,6 +1260,7 @@ impl<'src> Lexer<'src> {
 							break 'lexer;
 						},
 					},
+
 					Dot => match self.bump() {
 						b'.' => {
 							kind = TokenKind::DotDot;
@@ -1271,6 +1279,20 @@ impl<'src> Lexer<'src> {
 							seen_digit = true;
 							#[const_continue]
 							break 'state FloatDot2;
+						},
+						_ => {
+							self.offset -= 1;
+							break 'lexer;
+						},
+					},
+					Underscore => match self.bump() {
+						chr if char_class::is_ident_start(chr) => {
+							kind = TokenKind::Ident {
+								symbol: COMMON_INTERNS.empty_str,
+								kind: IdentKind::User,
+							};
+							#[const_continue]
+							break 'state Ident;
 						},
 						_ => {
 							self.offset -= 1;
@@ -1352,7 +1374,7 @@ impl<'src> Lexer<'src> {
 								};
 								break 'lexer;
 							},
-							ident_kind @ (IdentKind::Builtin | IdentKind::Generic) => {
+							ident_kind @ (IdentKind::Builtin | IdentKind::UserComptime) => {
 								kind = TokenKind::Ident {
 									symbol: intern_str(&self.bytes[self.span_start..self.offset]),
 									kind: ident_kind,
@@ -1397,7 +1419,6 @@ impl<'src> Lexer<'src> {
 								"var" => TokenKind::KwVar,
 								"for" => TokenKind::KwFor,
 								"try" => TokenKind::KwTry,
-								"any" => TokenKind::TyAny,
 								"anyptr" => TokenKind::TyAnyptr,
 								"f16" => TokenKind::TyF16,
 								"f32" => TokenKind::TyF32,

@@ -1,29 +1,29 @@
-extern "builtin" #inline fn @slice_from_raw_parts($T, ptr: *const $T, len: usize) []$T
-extern "builtin" #inline fn @slice_ptr($T, slice: []const $T) *const $T
-extern "builtin" #inline fn @slice_len($T, slice: []const $T) usize
-extern "builtin" #inline fn @slice_copy_nonoverlapping($T, src: []const $T, dst: []const $T) void
+extern "builtin" #inline fn @slice_from_raw_parts(comptime T: type, ptr: *const T, len: usize) []T
+extern "builtin" #inline fn @slice_ptr(comptime T: type, slice: []const T) *const T
+extern "builtin" #inline fn @slice_len(comptime T: type, slice: []const T) usize
+extern "builtin" #inline fn @slice_copy_nonoverlapping(comptime T: type, src: []const T, dst: []const T) void
 
-#inline fn from_raw_parts($T, ptr: *const $T, len: usize) []$T {
-	return @slice_from_raw_parts(ptr, len)
+#inline fn from_raw_parts(comptime T: type, ptr: *const T, len: usize) []T {
+	return @slice_from_raw_parts(T, ptr, len)
 }
 
-#inline fn ptr($T, slice: []const $T) *const $T {
-	return @slice_ptr(slice)
+#inline fn ptr(comptime T: type, slice: []const T) *const T {
+	return @slice_ptr(T, slice)
 }
 
-#inline fn len($T, slice: []const $T) usize {
-	return @slice_len(slice)
+#inline fn len(comptime T: type, slice: []const T) usize {
+	return @slice_len(T, slice)
 }
 
-#inline fn cast($src_ty, $dst_ty, slice: []$src_ty) []$dst_ty {
+#inline fn cast(comptime src_ty: type, comptime dst_ty: type, slice: []src_ty) []dst_ty {
 	// TODO(zino): safety checks
-	const ptr: *const $dst_ty = @bitcast(ptr(slice))
+	const ptr: *const dst_ty = @bitcast(*const dst_ty, *const src_ty, ptr(src_ty, slice))
 
-	const src_len_in_bytes = len(slice) * @size_of($src_ty)
-	const new_len = src_len_in_bytes / @size_of($dst_ty)
-	return from_raw_parts(ptr, new_len)
+	const src_len_in_bytes = len(src_ty, slice) * @size_of(src_ty)
+	const new_len = src_len_in_bytes / @size_of(dst_ty)
+	return from_raw_parts(dst_ty, ptr, new_len)
 }
 
-#inline fn copy_nonoverlapping($T, src: []const $T, dst: []const $T) void {
-	@slice_copy_nonoverlapping(src, dst)
+#inline fn copy_nonoverlapping(comptime T: type, src: []const T, dst: []const T) void {
+	@slice_copy_nonoverlapping(T, src, dst)
 }

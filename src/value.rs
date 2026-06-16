@@ -288,9 +288,6 @@ pub struct FnDecl {
 pub struct TypeFn {
 	pub params: &'static [Index],
 	pub comptime_params: &'static bitvec::slice::BitSlice<u8>,
-	// TODO(zino): not sure this is the right place / way of storing the first non-generic parameter, but having
-	// a seperate slice for generics is also suboptimal
-	pub first_positional_param: Option<u16>,
 	pub var_args: bool,
 	pub ret_ty: Index,
 	pub external: bool,
@@ -367,10 +364,7 @@ pub struct NamespaceType {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Type {
 	// Types
-	Int {
-		signed: bool,
-		bits: u16,
-	},
+	Int { signed: bool, bits: u16 },
 	Anyint,
 	Anyfloat,
 	Usize,
@@ -389,17 +383,11 @@ pub enum Type {
 	Slice(TypeSlice),
 	Array(TypeArray),
 	NullPtr,
-
-	/// Generic type that can be any type possible
-	Any,
-	/// Runtime type-erased pointer plus compiler type identity
 	Anyptr,
-	/// Indicate a unknown generic which should be resolved
-	GenericPoison,
-
 	Type,
 	Never,
 	EnumLiteral,
+	GenericPoison,
 }
 
 /// Hashable and comparable part of a `Value` used to retrieve its index inside the `ValueMap`
@@ -455,13 +443,6 @@ pub enum Key {
 
 	// Types
 	Type(Type),
-
-	/// Per-param generic poison, unique per comptime type param,
-	/// so structural unification can distinguish different generics.
-	GenericPoison {
-		param_id: vuir::InstructionId,
-		name: internment::Intern<str>,
-	},
 
 	// Misc
 	DeclRef {
@@ -549,7 +530,7 @@ impl Key {
 	}
 
 	pub fn is_type(&self) -> bool {
-		matches!(self, Key::Type(_) | Key::GenericPoison { .. })
+		matches!(self, Key::Type(_))
 	}
 
 	pub fn type_is_numeric(&self) -> bool {
@@ -601,7 +582,6 @@ impl<'store> Display for DisplayIndex<'store> {
 		match key {
 			Key::Type(ty) => match ty {
 				Type::Type => write!(f, "type"),
-				Type::Any => write!(f, "any"),
 				Type::Anyptr => write!(f, "anyptr"),
 				Type::Anyint => write!(f, "anyint"),
 				Type::Anyfloat => write!(f, "anyfloat"),
@@ -628,7 +608,6 @@ impl<'store> Display for DisplayIndex<'store> {
 					let u = value.load(Ordering::Relaxed).as_union();
 					write!(f, "{}", u.name)
 				},
-				Type::GenericPoison => write!(f, "any_poison"),
 				Type::Ptr(ptr) => write!(f, "*{}", DisplayIndex {
 					store: self.store,
 					index: ptr.pointee_ty
@@ -645,8 +624,8 @@ impl<'store> Display for DisplayIndex<'store> {
 				Type::NullPtr => write!(f, "nullptr"),
 				Type::Never => write!(f, "never"),
 				Type::EnumLiteral => write!(f, "enum_literal"),
+				Type::GenericPoison => write!(f, "generic_poison"),
 			},
-			Key::GenericPoison { name, .. } => write!(f, "{}", name),
 			Key::Undefined { .. }
 			| Key::Str { .. }
 			| Key::Slice { .. }
@@ -813,10 +792,8 @@ impl ValueStore {
 				anyfloat_t: value_map.entry(&Key::Type(Type::Anyfloat)).or_insert_with(Value::none),
 				void_t: value_map.entry(&Key::Type(Type::Void)).or_insert_with(Value::none),
 				void_value: value_map.entry(&Key::Void).or_insert_with(Value::none),
-				any_t: value_map.entry(&Key::Type(Type::Any)).or_insert_with(Value::none),
 				anyptr_t: value_map.entry(&Key::Type(Type::Anyptr)).or_insert_with(Value::none),
 				type_t: value_map.entry(&Key::Type(Type::Type)).or_insert_with(Value::none),
-				generic_poison_t: value_map.entry(&Key::Type(Type::GenericPoison)).or_insert_with(Value::none),
 				never_t: value_map.entry(&Key::Type(Type::Never)).or_insert_with(Value::none),
 				usize_t: value_map.entry(&Key::Type(Type::Usize)).or_insert_with(Value::none),
 				isize_t: value_map.entry(&Key::Type(Type::Isize)).or_insert_with(Value::none),
@@ -841,6 +818,7 @@ impl ValueStore {
 				f128_t: value_map.entry(&Key::Type(Type::F128)).or_insert_with(Value::none),
 				bool_t: value_map.entry(&Key::Type(Type::Bool)).or_insert_with(Value::none),
 				enum_literal_t: value_map.entry(&Key::Type(Type::EnumLiteral)).or_insert_with(Value::none),
+				generic_poison_t: value_map.entry(&Key::Type(Type::GenericPoison)).or_insert_with(Value::none),
 				nullptr_t: value_map.entry(&Key::Type(Type::NullPtr)).or_insert_with(Value::none),
 				unreachable_value: value_map.entry(&Key::Unreachable).or_insert_with(Value::none),
 				true_value: value_map.entry(&Key::Bool(true)).or_insert_with(Value::none),
@@ -892,13 +870,11 @@ impl ValueStore {
 		match key {
 			// trivial
 			key @ (Key::Type(
-				Type::Any
-				| Type::Anyptr
+				Type::Anyptr
 				| Type::Ptr(..)
 				| Type::Int { .. }
 				| Type::Anyfloat
 				| Type::Anyint
-				| Type::GenericPoison
 				| Type::Usize
 				| Type::Isize
 				| Type::F16
@@ -914,9 +890,9 @@ impl ValueStore {
 				| Type::Never
 				| Type::Enum(..)
 				| Type::EnumLiteral
+				| Type::GenericPoison
 				| Type::NullPtr,
 			)
-			| Key::GenericPoison { .. }
 			| Key::Ptr(..)
 			| Key::Int { .. }
 			| Key::Float { .. }
@@ -989,237 +965,6 @@ impl ValueStore {
 		DisplayIndex { index, store: self }
 	}
 
-	// =========================================================================
-	// Generic poison helpers
-	// =========================================================================
-
-	/// Returns Some(param_id) if this is a per-param generic poison marker.
-	pub fn as_generic_poison(
-		&self,
-		ty: Index,
-	) -> Option<vuir::InstructionId> {
-		match self.index_to_key(ty) {
-			Key::GenericPoison { param_id, .. } => Some(*param_id),
-			Key::Undefined { .. }
-			| Key::Str { .. }
-			| Key::Slice { .. }
-			| Key::Int { .. }
-			| Key::Float { .. }
-			| Key::Bool(_)
-			| Key::Ptr(_)
-			| Key::Fn(_)
-			| Key::EnumTag { .. }
-			| Key::Aggregate { .. }
-			| Key::NullPtr
-			| Key::Void
-			| Key::Unreachable
-			| Key::Union { .. }
-			| Key::Type(_)
-			| Key::DeclRef { .. }
-			| Key::FnDecl(_)
-			| Key::EnumLiteral(_) => None,
-		}
-	}
-
-	/// True if this type IS any generic poison (per-param or legacy).
-	pub fn is_any_generic_poison(
-		&self,
-		ty: Index,
-	) -> bool {
-		ty == self.common.generic_poison_t || self.as_generic_poison(ty).is_some()
-	}
-
-	/// True if this type contains a generic poison anywhere in its structure.
-	pub fn type_contains_generic_poison(
-		&self,
-		ty: Index,
-	) -> bool {
-		if self.is_any_generic_poison(ty) {
-			return true;
-		}
-		match self.index_to_key(ty) {
-			Key::Type(ty) => match ty {
-				Type::Ptr(ptr) => self.type_contains_generic_poison(ptr.pointee_ty),
-				Type::Slice(slice) => self.type_contains_generic_poison(slice.pointee_ty),
-				Type::Array(array) => self.type_contains_generic_poison(array.elem_ty),
-				Type::Fn(function) => {
-					function.params.iter().any(|ty| self.type_contains_generic_poison(*ty))
-						|| self.type_contains_generic_poison(function.ret_ty)
-				},
-				Type::Struct(ns) | Type::Enum(ns) | Type::Union(ns) => ns.captures.iter().any(|cap| match cap {
-					Capture::Comptime(cap) => self.type_contains_generic_poison(*cap),
-					Capture::Runtime(_) => false,
-				}),
-				Type::GenericPoison => true,
-				Type::Int { .. }
-				| Type::Anyint
-				| Type::Anyfloat
-				| Type::Usize
-				| Type::Isize
-				| Type::F16
-				| Type::F32
-				| Type::F64
-				| Type::F128
-				| Type::Bool
-				| Type::Void
-				| Type::NullPtr
-				| Type::Any
-				| Type::Anyptr
-				| Type::Type
-				| Type::Never
-				| Type::EnumLiteral => false,
-			},
-			Key::GenericPoison { .. } => true,
-			Key::Undefined { .. }
-			| Key::Str { .. }
-			| Key::Slice { .. }
-			| Key::Int { .. }
-			| Key::Float { .. }
-			| Key::Bool(_)
-			| Key::Ptr(_)
-			| Key::Fn(_)
-			| Key::EnumTag { .. }
-			| Key::Aggregate { .. }
-			| Key::NullPtr
-			| Key::Void
-			| Key::Unreachable
-			| Key::Union { .. }
-			| Key::DeclRef { .. }
-			| Key::FnDecl(_)
-			| Key::EnumLiteral(_) => false,
-		}
-	}
-
-	/// Intern a per-param generic poison.
-	pub fn make_generic_poison(
-		&self,
-		param_id: vuir::InstructionId,
-		name: internment::Intern<str>,
-	) -> Index {
-		self.intern_trivial(&Key::GenericPoison { param_id, name })
-	}
-
-	/// Walk a type tree and replace every GenericPoison node with the
-	/// corresponding concrete type from `bindings`. Pure data transform.
-	pub fn substitute_poisons(
-		&self,
-		ty: Index,
-		bindings: &rustc_hash::FxHashMap<vuir::InstructionId, Index>,
-	) -> Index {
-		if let Some(param_id) = self.as_generic_poison(ty) {
-			return bindings.get(&param_id).copied().unwrap_or(ty);
-		}
-		if !self.type_contains_generic_poison(ty) {
-			return ty;
-		}
-		let Key::Type(ty_key) = self.index_to_key(ty) else {
-			unreachable!("generic substitution expected a type")
-		};
-		match ty_key {
-			Type::Ptr(ptr) => {
-				let new_pointee = self.substitute_poisons(ptr.pointee_ty, bindings);
-				self.intern_trivial(&Key::Type(Type::Ptr(TypePtr {
-					pointee_ty: new_pointee,
-					..*ptr
-				})))
-			},
-			Type::Slice(sl) => {
-				let new_elem = self.substitute_poisons(sl.pointee_ty, bindings);
-				self.intern_trivial(&Key::Type(Type::Slice(TypeSlice { pointee_ty: new_elem })))
-			},
-			Type::Array(array) => {
-				let elem_ty = self.substitute_poisons(array.elem_ty, bindings);
-				self.intern_trivial(&Key::Type(Type::Array(TypeArray { elem_ty, ..*array })))
-			},
-			Type::Fn(function) => {
-				let params = function
-					.params
-					.iter()
-					.map(|ty| self.substitute_poisons(*ty, bindings))
-					.collect::<Vec<_>>();
-				let ret_ty = self.substitute_poisons(function.ret_ty, bindings);
-				self.intern_trivial(&Key::Type(Type::Fn(TypeFn {
-					params: self.alloc_slice(&params),
-					ret_ty,
-					..*function
-				})))
-			},
-			Type::Struct(ns) => {
-				let new_captures: Vec<Capture> = ns
-					.captures
-					.iter()
-					.map(|cap| match cap {
-						Capture::Comptime(cap) => Capture::Comptime(self.substitute_poisons(*cap, bindings)),
-						Capture::Runtime(cap) => Capture::Runtime(*cap),
-					})
-					.collect();
-				let new_captures = self.alloc_slice(&new_captures);
-				self.intern_non_trivial(
-					&Key::Type(Type::Struct(NamespaceType {
-						inst: ns.inst,
-						captures: new_captures,
-					})),
-					// Re-fetch the value for the original to preserve it
-					self.index_to_value(ty),
-				)
-			},
-			Type::Enum(ns) => {
-				let new_captures: Vec<Capture> = ns
-					.captures
-					.iter()
-					.map(|cap| match cap {
-						Capture::Comptime(cap) => Capture::Comptime(self.substitute_poisons(*cap, bindings)),
-						Capture::Runtime(cap) => Capture::Runtime(*cap),
-					})
-					.collect();
-				let new_captures = self.alloc_slice(&new_captures);
-				self.intern_non_trivial(
-					&Key::Type(Type::Enum(NamespaceType {
-						inst: ns.inst,
-						captures: new_captures,
-					})),
-					self.index_to_value(ty),
-				)
-			},
-			Type::Union(ns) => {
-				let new_captures: Vec<Capture> = ns
-					.captures
-					.iter()
-					.map(|cap| match cap {
-						Capture::Comptime(cap) => Capture::Comptime(self.substitute_poisons(*cap, bindings)),
-						Capture::Runtime(cap) => Capture::Runtime(*cap),
-					})
-					.collect();
-				let new_captures = self.alloc_slice(&new_captures);
-				self.intern_non_trivial(
-					&Key::Type(Type::Union(NamespaceType {
-						inst: ns.inst,
-						captures: new_captures,
-					})),
-					self.index_to_value(ty),
-				)
-			},
-			Type::Int { .. }
-			| Type::Anyint
-			| Type::Anyfloat
-			| Type::Usize
-			| Type::Isize
-			| Type::F16
-			| Type::F32
-			| Type::F64
-			| Type::F128
-			| Type::Bool
-			| Type::Void
-			| Type::NullPtr
-			| Type::Any
-			| Type::Anyptr
-			| Type::GenericPoison
-			| Type::Type
-			| Type::Never
-			| Type::EnumLiteral => ty,
-		}
-	}
-
 	/// Allocate a slice in the bump allocator, returning a &'static reference.
 	///
 	/// # Safety
@@ -1279,7 +1024,7 @@ impl ValueStore {
 	) -> Index {
 		let key = self.index_to_key(i);
 		match key {
-			Key::Type(_) | Key::GenericPoison { .. } => self.common.type_t,
+			Key::Type(_) => self.common.type_t,
 			Key::Ptr(ptr) => ptr.ty,
 			Key::Fn(fun) => fun.ty,
 			Key::Int { ty, .. } => *ty,
@@ -1312,7 +1057,7 @@ impl ValueStore {
 		};
 		match ty_key {
 			// comptime only
-			Type::Any | Type::Anyint | Type::Anyfloat | Type::Type | Type::EnumLiteral | Type::NullPtr => true,
+			Type::Anyint | Type::Anyfloat | Type::Type | Type::EnumLiteral | Type::NullPtr | Type::GenericPoison => true,
 
 			// comptime if inner types is
 			Type::Struct(_) => {
@@ -1360,9 +1105,6 @@ impl ValueStore {
 			| Type::F32
 			| Type::F64
 			| Type::F128 => false,
-
-			// cannot be determined at all and the compiler should never ask for a generic poison
-			Type::GenericPoison => unreachable!(),
 		}
 	}
 
@@ -1394,11 +1136,10 @@ impl ValueStore {
 			| Type::Slice(_)
 			| Type::Array(_)
 			| Type::NullPtr
-			| Type::Any
 			| Type::Anyptr
-			| Type::GenericPoison
 			| Type::Type
 			| Type::Never
+			| Type::GenericPoison
 			| Type::EnumLiteral => false,
 		}
 	}
@@ -1439,11 +1180,10 @@ impl ValueStore {
 			| Type::Slice(_)
 			| Type::Array(_)
 			| Type::NullPtr
-			| Type::Any
 			| Type::Anyptr
-			| Type::GenericPoison
 			| Type::Type
 			| Type::Never
+			| Type::GenericPoison
 			| Type::EnumLiteral => unreachable!("{ty_key:?} has no direct bit size"),
 		}
 	}
@@ -1539,11 +1279,10 @@ impl ValueStore {
 			| Type::Anyfloat
 			| Type::Fn(_)
 			| Type::NullPtr
-			| Type::Any
-			| Type::GenericPoison
 			| Type::Type
 			| Type::Never
-			| Type::EnumLiteral => {
+			| Type::EnumLiteral
+			| Type::GenericPoison => {
 				unreachable!("{ty_key:?} has no runtime layout")
 			},
 		}
@@ -1640,18 +1379,13 @@ impl ValueStore {
 			| Type::Slice(_)
 			| Type::Array(_)
 			| Type::NullPtr
-			| Type::Any
 			| Type::Anyptr
-			| Type::GenericPoison
 			| Type::Type
 			| Type::Never
+			| Type::GenericPoison
 			| Type::EnumLiteral => unreachable!("{ty_key:?} is not an integer type"),
 		}
 	}
-}
-
-pub enum TypeComptimeReason {
-	StructFieldIsComptime(),
 }
 
 #[derive(Debug)]
@@ -1660,11 +1394,9 @@ pub struct CommonValues {
 	pub anyint_t: Index,
 	pub anyfloat_t: Index,
 	pub void_t: Index,
-	pub any_t: Index,
 	pub anyptr_t: Index,
 	pub type_t: Index,
 	pub never_t: Index,
-	pub generic_poison_t: Index,
 	pub usize_t: Index,
 	pub isize_t: Index,
 	pub u16_t: Index,
@@ -1679,6 +1411,7 @@ pub struct CommonValues {
 	pub bool_t: Index,
 	pub enum_literal_t: Index,
 	pub nullptr_t: Index,
+	pub generic_poison_t: Index,
 	pub unreachable_value: Index,
 	pub void_value: Index,
 	pub true_value: Index,

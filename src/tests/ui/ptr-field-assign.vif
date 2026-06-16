@@ -13,7 +13,7 @@ fn translate(p: *Point, dx: i32, dy: i32) void {
 fn main() void {
     var p: Point = Point { .x = 1, .y = 2 }
     translate(&p, 3, 4)
-    printf(std.slice.ptr("%d %d\n"), p.x, p.y)
+    printf(std.slice.ptr(u8, "%d %d\n"), p.x, p.y)
 }
 
 //@ args: run

@@ -121,9 +121,9 @@ impl ControlFlow {
 #[derive(Clone, Debug)]
 pub struct DeclFnParam {
 	pub name: Intern<str>,
-	ty: value::Index,
+	pub ty: value::Index,
 	pub vuir_id: vuir::InstructionId,
-	comptime: bool,
+	pub comptime: bool,
 	pub span: Span,
 }
 
@@ -341,11 +341,10 @@ impl<'a> Sema<'a> {
 			| value::Type::Slice(_)
 			| value::Type::Array(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
-			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
+			| value::Type::GenericPoison
 			| value::Type::EnumLiteral => None,
 		}
 	}
@@ -408,7 +407,6 @@ impl<'a> Sema<'a> {
 		self.cu.values.intern_trivial(&value::Key::Type(value::Type::Fn(TypeFn {
 			params: self.cu.values.alloc_slice(&params),
 			comptime_params: self.cu.values.alloc_bitslice(&comptime_params),
-			first_positional_param: source_fn_ty.first_positional_param.map(|idx| idx + 1),
 			var_args: source_fn_ty.var_args,
 			ret_ty: source_fn_ty.ret_ty,
 			external: source_fn_ty.external,
@@ -736,6 +734,14 @@ impl<'a> Sema<'a> {
 		match builtin_kind {
 			vuir::BuiltinKind::UnsafeIntCast => {
 				let src = self.resolve_inst(&func_vuir_info.params[2].as_ref());
+				let src = if matches!(
+					self.cu.values.index_to_key(self.type_of(&src)),
+					value::Key::Type(value::Type::Anyint)
+				) {
+					self.coerce(block, fun_ty.ret_ty, src, &caller_span.span)?
+				} else {
+					src
+				};
 				let result = self.inst(block, vtir::Opcode::UnsafeIntCast {
 					src,
 					dst_ty: fun_ty.ret_ty,
@@ -778,7 +784,7 @@ impl<'a> Sema<'a> {
 				Ok(result)
 			},
 			vuir::BuiltinKind::IntFromEnum => {
-				let value = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let value = self.resolve_inst(&func_vuir_info.params[2].as_ref());
 				let value_ty = self.type_of(&value);
 				let value_ty = self.cu.values.index_to_key(value_ty);
 				let value::Value::Enum(type_enum) = self.cu.values.index_to_value(self.type_of(&value)) else {
@@ -806,7 +812,7 @@ impl<'a> Sema<'a> {
 				Ok(result)
 			},
 			vuir::BuiltinKind::IntToFloat => {
-				let src = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let src = self.resolve_inst(&func_vuir_info.params[2].as_ref());
 				let result = self.inst(block, vtir::Opcode::IntToFloat {
 					src,
 					dst_ty: fun_ty.ret_ty,
@@ -941,7 +947,7 @@ impl<'a> Sema<'a> {
 			},
 			vuir::BuiltinKind::Bitcast => {
 				// ensure preconditions
-				let value = self.resolve_inst(&func_vuir_info.params[0].as_ref());
+				let value = self.resolve_inst(&func_vuir_info.params[2].as_ref());
 				let src_ty = self.type_of(&value);
 				let src_byte_size = self.cu.values.type_layout(&self.cu.resolved_target, src_ty).size;
 				let dst_byte_size = self.cu.values.type_layout(&self.cu.resolved_target, fun_ty.ret_ty).size;
@@ -1312,11 +1318,10 @@ impl<'a> Sema<'a> {
 							| value::Type::Slice(_)
 							| value::Type::Array(_)
 							| value::Type::NullPtr
-							| value::Type::Any
 							| value::Type::Anyptr
-							| value::Type::GenericPoison
 							| value::Type::Type
 							| value::Type::Never
+							| value::Type::GenericPoison
 							| value::Type::EnumLiteral => return Err(AnalyzeError::AnalysisFailed),
 						}
 					}
@@ -1415,11 +1420,10 @@ impl<'a> Sema<'a> {
 								| value::Type::Slice(_)
 								| value::Type::Array(_)
 								| value::Type::NullPtr
-								| value::Type::Any
 								| value::Type::Anyptr
-								| value::Type::GenericPoison
 								| value::Type::Type
 								| value::Type::Never
+								| value::Type::GenericPoison
 								| value::Type::EnumLiteral => unreachable!("invalid packed struct field type"),
 							}
 						})
@@ -1831,7 +1835,6 @@ impl<'a> Sema<'a> {
 				callconv,
 				builtin,
 				inline,
-				first_positional_arg_index,
 				span,
 			} => {
 				// Collect parameters with both names and types for named argument resolution
@@ -1845,7 +1848,7 @@ impl<'a> Sema<'a> {
 					for param in decl_fn_params {
 						comptime_params.push(param.comptime);
 						if !param.comptime
-							&& !self.cu.values.type_contains_generic_poison(param.ty)
+							&& param.ty != self.cu.values.common.generic_poison_t // generic poison: we don't know the true type, it'll be known in call sites
 							&& self.cu.values.type_is_comptime_only(param.ty)
 						{
 							self.push_error(
@@ -1956,7 +1959,6 @@ impl<'a> Sema<'a> {
 					let fn_ty = value::Key::Type(value::Type::Fn(TypeFn {
 						params: self.cu.values.alloc_slice(&param_defs),
 						comptime_params: self.cu.values.alloc_bitslice(&comptime_params),
-						first_positional_param: *first_positional_arg_index,
 						var_args: *var_args,
 						ret_ty,
 						external: *external,
@@ -2118,7 +2120,15 @@ impl<'a> Sema<'a> {
 				Ok((capture, ControlFlow::May))
 			},
 			vuir::Opcode::Undefined { ty, span } => {
-				let ty = ty.map_or(Ok(self.cu.values.common.any_t), |ty| self.resolve_type(block, &ty, span))?;
+				let Some(ty) = ty else {
+					self.push_error(
+						Diagnostic::error()
+							.with_message("`undefined` requires an explicit type")
+							.with_label(Label::primary().with_span(self.diag_span(*span))),
+					);
+					return Err(AnalyzeError::AnalysisFailed);
+				};
+				let ty = self.resolve_type(block, ty, span)?;
 				let inst = self.inst(block, vtir::Opcode::Undefined { ty });
 				self.vuir_map.insert(id, inst);
 				Ok((inst, ControlFlow::May))
@@ -2148,11 +2158,10 @@ impl<'a> Sema<'a> {
 						| value::Type::Fn(_)
 						| value::Type::Ptr(_)
 						| value::Type::NullPtr
-						| value::Type::Any
 						| value::Type::Anyptr
-						| value::Type::GenericPoison
 						| value::Type::Type
 						| value::Type::Never
+						| value::Type::GenericPoison
 						| value::Type::EnumLiteral => unreachable!("invalid empty aggregate initializer type"),
 					},
 					vuir::AggregateInitKind::Adt(fields) => match ty_key {
@@ -2175,11 +2184,10 @@ impl<'a> Sema<'a> {
 						| value::Type::Slice(_)
 						| value::Type::Array(_)
 						| value::Type::NullPtr
-						| value::Type::Any
 						| value::Type::Anyptr
-						| value::Type::GenericPoison
 						| value::Type::Type
 						| value::Type::Never
+						| value::Type::GenericPoison
 						| value::Type::EnumLiteral => unreachable!("invalid ADT initializer type"),
 					},
 					vuir::AggregateInitKind::Array(elements) => self.analyze_array_init(id, block, ty, elements, span),
@@ -2191,6 +2199,7 @@ impl<'a> Sema<'a> {
 				comptime,
 				generic,
 				span,
+				..
 			} => {
 				// generics are analyzed in callsite
 				let param_ty = if *generic {
@@ -2441,7 +2450,7 @@ impl<'a> Sema<'a> {
 						self.diag_decl_not_found(&ident.symbol, module_value, &ident.span);
 						AnalyzeError::AnalysisFailed
 					})?;
-				let inst = self.analyze_decl_ptr(block, decl)?;
+				let inst = self.analyze_decl_ptr(block, decl, &ident.span)?;
 				self.vuir_map.insert(id, inst);
 				Ok((inst, ControlFlow::May))
 			},
@@ -2532,28 +2541,17 @@ impl<'a> Sema<'a> {
 			},
 			vuir::Opcode::FnCall {
 				fun,
-				generic_args,
 				args,
 				ret_ty: expected_ret_ty,
 				span,
 			} => {
 				let fun = self.resolve_inst(fun);
-				self.analyze_fn_call(
-					id,
-					block,
-					AnalyzedCallee { fun, env: None },
-					generic_args,
-					args,
-					expected_ret_ty,
-					None,
-					span,
-				)
-				.map(|inst| (inst, ControlFlow::May))
+				self.analyze_fn_call(id, block, AnalyzedCallee { fun }, args, expected_ret_ty, None, span)
+					.map(|inst| (inst, ControlFlow::May))
 			},
 			vuir::Opcode::FnCallWithFieldPtrReceiver {
 				field_ptr,
 				field_name,
-				generic_args,
 				args,
 				ret_ty: expected_ret_ty,
 				span,
@@ -2590,7 +2588,7 @@ impl<'a> Sema<'a> {
 						(value::Key::Type(value::Type::Type), _) => {
 							let namespace_type = self.analyze_load(block, object_ptr, span)?;
 							let fun = self.analyze_field_val(block, namespace_type, &field_name.symbol, &field_name.span, span)?;
-							break 'fun (AnalyzedCallee { fun, env: None }, None);
+							break 'fun (AnalyzedCallee { fun }, None);
 						},
 						_ => todo!(),
 					}
@@ -2619,19 +2617,23 @@ impl<'a> Sema<'a> {
 					// we have a potential function
 					let decl = self.analyze_decl_val(block, decl, span)?;
 					match self.cu.values.index_to_key(self.type_of(&decl)) {
-						value::Key::Type(value::Type::Fn(TypeFn {
-							params,
-							first_positional_param: Some(first_positional_param),
-							..
-						})) => {
-							let expected_ty = params[*first_positional_param as usize];
+						value::Key::Type(value::Type::Fn(TypeFn { params, .. })) => {
+							if params.is_empty() {
+								self.push_error(
+									Diagnostic::error()
+										.with_message(format!("`{}` is not a member function", field_name.symbol))
+										.with_label(Label::primary().with_span(self.diag_span(field_name.span))),
+								);
+								return Err(AnalyzeError::AnalysisFailed);
+							}
+							let expected_ty = params[0];
 							if concrete_ty == expected_ty {
 								let deref_callee = self.analyze_load(block, object_ptr, span)?;
-								(AnalyzedCallee { fun: decl, env: None }, Some(deref_callee))
+								(AnalyzedCallee { fun: decl }, Some(deref_callee))
 							} else if matches!(self.cu.values.index_to_key(expected_ty), value::Key::Type(value::Type::Ptr(ptr_ty)) if ptr_ty.pointee_ty == concrete_ty)
 							{
 								// we authorize a single dereference for receiver calls so we don't need a special syntax -> like C++
-								(AnalyzedCallee { fun: decl, env: None }, Some(object_ptr))
+								(AnalyzedCallee { fun: decl }, Some(object_ptr))
 							} else {
 								self.push_error(
 									Diagnostic::error()
@@ -2656,7 +2658,7 @@ impl<'a> Sema<'a> {
 					}
 				};
 
-				self.analyze_fn_call(id, block, callee, generic_args, args, expected_ret_ty, receiver, span)
+				self.analyze_fn_call(id, block, callee, args, expected_ret_ty, receiver, span)
 					.map(|inst| (inst, ControlFlow::May))
 			},
 			vuir::Opcode::Coerce { value, into, span } => {
@@ -2683,7 +2685,7 @@ impl<'a> Sema<'a> {
 				self.vuir_map.insert(id, callconv_ty);
 				Ok((callconv_ty, ControlFlow::May))
 			},
-			vuir::Opcode::StructInitTypeOfField { r#struct, field } => {
+			vuir::Opcode::StructInitTypeOfField { r#struct, field, span } => {
 				let inst = self.resolve_inst(r#struct).as_interned();
 				let ty = match self.cu.values.index_to_key(inst) {
 					value::Key::Type(value::Type::Union(_)) => {
@@ -2714,7 +2716,7 @@ impl<'a> Sema<'a> {
 				self.vuir_map.insert(id, ty);
 				Ok((ty, ControlFlow::May))
 			},
-			vuir::Opcode::TypeOfPtrPointee { ptr } => {
+			vuir::Opcode::TypeOfPtrPointee { ptr, span } => {
 				let ptr = self.resolve_inst(ptr);
 				let ty = if let vtir::InstructionRef::Instruction(ptr_id) = ptr
 					&& matches!(self.instructions[ptr_id], vtir::Opcode::StackAllocInferred { .. })
@@ -2723,7 +2725,7 @@ impl<'a> Sema<'a> {
 						.get(&ptr)
 						.copied()
 						.flatten()
-						.unwrap_or(self.cu.values.common.any_t)
+						.unwrap_or(self.cu.values.common.generic_poison_t)
 				} else {
 					self.cu.values.index_to_key(self.type_of(&ptr)).as_type_ptr().pointee_ty
 				};
@@ -2919,7 +2921,7 @@ impl<'a> Sema<'a> {
 				let Some(pointee_ty) = self.try_resolve_comptime_value(&pointee_ty) else {
 					self.push_error(
 						Diagnostic::error()
-							.with_message("pointer type must be a valid type but is an arbitrary value")
+							.with_message("pointee type isn't valid (not a `type`)")
 							.with_label(Label::primary().with_span(self.diag_span(*span))),
 					);
 					return Err(AnalyzeError::AnalysisFailed);
@@ -3438,11 +3440,10 @@ impl<'a> Sema<'a> {
 			| value::Type::Slice(_)
 			| value::Type::Array(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
-			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
+			| value::Type::GenericPoison
 			| value::Type::EnumLiteral => return value,
 		};
 
@@ -4099,7 +4100,7 @@ impl<'a> Sema<'a> {
 		decl: DeclId,
 		span: &Span,
 	) -> Result<vtir::InstructionRef, AnalyzeError> {
-		let ptr = self.analyze_decl_ptr(block, decl)?;
+		let ptr = self.analyze_decl_ptr(block, decl, span)?;
 		self.analyze_load(block, ptr, span)
 	}
 
@@ -4107,6 +4108,7 @@ impl<'a> Sema<'a> {
 		&mut self,
 		block: BlockId,
 		decl: DeclId,
+		span: &Span,
 	) -> Result<vtir::InstructionRef, AnalyzeError> {
 		let Some(value) = self.cu.get_or_analyze_decl_value(decl)? else {
 			return Err(AnalyzeError::AnalysisFailed);
@@ -4722,11 +4724,6 @@ impl<'a> Sema<'a> {
 					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 5)),
 					payload: None,
 				}),
-				value::Type::Any => values.intern_trivial(&value::Key::Union {
-					ty: kind_ty,
-					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 6)),
-					payload: None,
-				}),
 				value::Type::Anyptr => values.intern_trivial(&value::Key::Union {
 					ty: kind_ty,
 					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 7)),
@@ -5112,7 +5109,7 @@ impl<'a> Sema<'a> {
 					})
 				},
 
-				value::Type::NullPtr | value::Type::GenericPoison | value::Type::EnumLiteral => {
+				value::Type::NullPtr | value::Type::EnumLiteral | value::Type::GenericPoison => {
 					unreachable!()
 				},
 			}
@@ -5147,6 +5144,8 @@ impl<'a> Sema<'a> {
 				ty: type_info_ty,
 				values: type_info,
 			});
+			// SAFETY: `type_info_id` was allocated from `type_info_entries` for this exact
+			// type-info slot above, so replacing that reserved slot is in bounds.
 			unsafe {
 				self.cu.type_info_entries.replace(type_info_id, type_info);
 			}
@@ -5172,7 +5171,7 @@ impl<'a> Sema<'a> {
 		};
 
 		// either inst is already of the right type or dst_ty is generic poison, which we can never coerce into
-		if self.cu.values.type_contains_generic_poison(dst_ty) || dst_ty == inst_ty {
+		if dst_ty == self.cu.values.common.generic_poison_t || dst_ty == inst_ty {
 			return Ok(inst);
 		}
 
@@ -5199,8 +5198,6 @@ impl<'a> Sema<'a> {
 					"cannot coerce comptime-only value of type `{}` to runtime `anyptr`",
 					self.cu.values.display_index(inst_ty)
 				)),
-				(_, value::Key::Type(value::Type::Any)) if self.blocks[block].comptime => Ok(inst),
-
 				// Integer types conversions
 				(value::Key::Type(value::Type::Anyint), value::Key::Type(value::Type::Usize) | value::Key::Type(value::Type::Isize)) => {
 					let value::Key::Int { value, .. } = self.cu.values.index_to_key(inst.as_interned()) else {
@@ -5412,11 +5409,10 @@ impl<'a> Sema<'a> {
 			| value::Type::Slice(_)
 			| value::Type::Array(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
-			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
+			| value::Type::GenericPoison
 			| value::Type::EnumLiteral => None,
 		}
 	}
@@ -5476,11 +5472,10 @@ impl<'a> Sema<'a> {
 			| value::Type::Slice(_)
 			| value::Type::Array(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
-			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
+			| value::Type::GenericPoison
 			| value::Type::EnumLiteral => {
 				self.push_error(
 					Diagnostic::error()
@@ -5686,11 +5681,10 @@ impl<'a> Sema<'a> {
 			| value::Type::Slice(_)
 			| value::Type::Array(_)
 			| value::Type::NullPtr
-			| value::Type::Any
 			| value::Type::Anyptr
-			| value::Type::GenericPoison
 			| value::Type::Type
 			| value::Type::Never
+			| value::Type::GenericPoison
 			| value::Type::EnumLiteral => {
 				self.push_error(
 					Diagnostic::error()

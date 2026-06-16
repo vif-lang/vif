@@ -234,11 +234,6 @@ impl Expr {
 
 		None
 	}
-
-	#[inline(always)]
-	pub const fn is_generic_type(&self) -> bool {
-		matches!(self.kind, ExprKind::Type(Type::Generic))
-	}
 }
 
 impl PartialEq for Expr {
@@ -361,6 +356,8 @@ pub enum ExprKind {
 	StructInit(&'static StructInit),
 	/// `[N:sentinel]{ value1, value2, ..., valueN }`
 	ArrayInit(&'static ArrayInit),
+	/// `_`
+	Discard,
 }
 
 impl PartialEq for ExprKind {
@@ -601,7 +598,6 @@ pub enum Type {
 	Fn(&'static FnSig),
 	/// `?T`
 	Nullable(&'static Expr),
-	Generic,
 
 	Struct(&'static StructTy),
 	Union(&'static UnionTy),
@@ -614,7 +610,6 @@ pub enum Type {
 
 	Void,
 	Type,
-	Any,
 	Anyptr,
 	Anyint,
 	Anyfloat,
@@ -676,14 +671,7 @@ pub enum IndexKind {
 #[derive(Copy, Clone, Debug)]
 pub struct FnCall {
 	pub callee: &'static Expr,
-	pub generics: &'static [GenericArg],
 	pub args: &'static [Arg],
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct GenericArg {
-	pub ident: Ident,
-	pub value: &'static Expr,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -694,10 +682,6 @@ pub enum Arg {
 
 #[derive(Copy, Clone, Debug)]
 pub struct StructTy {
-	/// Generics are guaranteed to be unique, i.e., no duplicate names/ids.
-	pub generics: &'static [Generic],
-	/// Struct parameters are guaranteed to being const
-	pub params: &'static [FnParam],
 	pub fields: &'static [FieldDef],
 	pub associated_items: &'static [AssociatedItem],
 	pub packed: bool,
@@ -1080,8 +1064,6 @@ pub struct Fn {
 	pub comptime: bool,
 	pub callconv: Option<&'static Expr>,
 	pub variadic: bool,
-	/// Generics are guaranteed to be unique, i.e., no duplicate names/ids.
-	pub generics: &'static [Generic],
 	pub params: &'static [FnParam],
 	pub ret_ty: &'static Expr,
 	pub block: Option<Block>,
@@ -1134,34 +1116,7 @@ pub struct FnParam {
 	pub id: NodeId,
 	pub comptime: bool,
 	pub ident: Ident,
-	pub default: Option<&'static Expr>,
 	pub ty: &'static Expr,
-}
-
-/// A generic parameter is by default considered to be of type `type`, unless
-/// constrained otherwise through `default` field.
-#[derive(Copy, Clone, Debug)]
-pub struct Generic {
-	pub id: NodeId,
-	pub ident: Ident,
-}
-
-impl PartialEq for Generic {
-	#[inline(always)]
-	fn eq(
-		&self,
-		other: &Self,
-	) -> bool {
-		self.id == other.id
-	}
-
-	#[inline(always)]
-	fn ne(
-		&self,
-		other: &Self,
-	) -> bool {
-		self.id != other.id
-	}
 }
 
 impl PartialEq for FnParam {

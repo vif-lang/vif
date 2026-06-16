@@ -28,7 +28,7 @@ fn main() void {
     const W = Wrapper(P)
     const p: P = .{ .left = 9, .right = 33usize }
     const w: W = .{ .inner = p, .bias = 10usize }
-    printf(std.slice.ptr("%u %u %u\n"), p.left_value(), w.inner.right, w.checksum())
+    printf(std.slice.ptr(u8, "%u %u %u\n"), p.left_value(), w.inner.right, w.checksum())
 }
 
 //@ args: run

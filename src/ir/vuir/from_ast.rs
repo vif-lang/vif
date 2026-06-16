@@ -233,6 +233,45 @@ enum ExprResultLocation {
 	GetAddressOf,
 }
 
+#[derive(Copy, Clone, Debug)]
+enum ExprContextKind {
+	None,
+	FnArg,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct ExprContext {
+	result_location: ExprResultLocation,
+	context: ExprContextKind,
+}
+impl Default for ExprContext {
+	fn default() -> Self {
+		Self {
+			result_location: ExprResultLocation::None,
+			context: ExprContextKind::None,
+		}
+	}
+}
+#[allow(non_upper_case_globals, non_snake_case)]
+impl ExprContext {
+	const None: Self = Self {
+		result_location: ExprResultLocation::None,
+		context: ExprContextKind::None,
+	};
+
+	const GetAddressOf: Self = Self {
+		result_location: ExprResultLocation::GetAddressOf,
+		context: ExprContextKind::None,
+	};
+
+	fn coerce_to_ty(ty: vuir::InstructionRef) -> Self {
+		Self {
+			result_location: ExprResultLocation::CoerceToTy(ty),
+			context: ExprContextKind::None,
+		}
+	}
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 enum BlockKind {
 	/// A block without any control flow
@@ -429,10 +468,10 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		inst: vuir::InstructionRef,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 		span: Span,
 	) -> vuir::InstructionRef {
-		match rhs_ctx {
+		match ctx.result_location {
 			ExprResultLocation::StoreToPtr { ptr, span: ptr_span } => self.inst(block_scope, vuir::Opcode::Store {
 				dst: ptr,
 				src: inst,
@@ -456,16 +495,16 @@ impl<'ast> Lowerer<'ast> {
 		}
 	}
 
-	// Try to perform a coercion for the given `rhs_ctx` to its expected type.
+	// Try to perform a coercion for the given `ctx` to its expected type.
 	fn try_lower_coerce_into_result_loc_expected_ty(
 		&mut self,
 		block_scope: ScopeId,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> Option<vuir::InstructionRef> {
-		match rhs_ctx {
+		match ctx.result_location {
 			ExprResultLocation::CoerceToTy(ty) => Some(ty),
-			ExprResultLocation::StoreToPtr { ptr, .. } => {
-				let ty = self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr });
+			ExprResultLocation::StoreToPtr { ptr, span } => {
+				let ty = self.inst(block_scope, vuir::Opcode::TypeOfPtrPointee { ptr, span });
 				Some(ty)
 			},
 			_ => None,
@@ -630,30 +669,29 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		field_access: &ast::FieldAccess,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> vuir::InstructionRef {
-		match rhs_ctx {
+		match ctx.result_location {
 			ExprResultLocation::GetAddressOf => {
-				self.lower_field_access_no_rhs_ctx_handling(block_scope, field_access, ExprResultLocation::GetAddressOf, false)
+				self.lower_field_access_no_ctx_handling(block_scope, field_access, ExprContext::GetAddressOf, false)
 			},
-			rhs_ctx => {
+			_ => {
 				// every other case, assume we want the value therefore perform a field ptr load
-				let field_val =
-					self.lower_field_access_no_rhs_ctx_handling(block_scope, field_access, ExprResultLocation::GetAddressOf, true);
-				self.rvalue(block_scope, field_val, rhs_ctx, field_access.span)
+				let field_val = self.lower_field_access_no_ctx_handling(block_scope, field_access, ExprContext::GetAddressOf, true);
+				self.rvalue(block_scope, field_val, ctx, field_access.span)
 			},
 		}
 	}
 
 	#[inline]
-	fn lower_field_access_no_rhs_ctx_handling(
+	fn lower_field_access_no_ctx_handling(
 		&mut self,
 		block_scope: ScopeId,
 		field_access: &ast::FieldAccess,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 		loads_field: bool,
 	) -> vuir::InstructionRef {
-		let lhs = self.lower_expr(block_scope, field_access.lhs, rhs_ctx);
+		let lhs = self.lower_expr(block_scope, field_access.lhs, ctx);
 		self.inst(
 			block_scope,
 			if loads_field {
@@ -676,7 +714,7 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		ident: &ast::Ident,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 		span: Span,
 	) -> Option<vuir::InstructionRef> {
 		let symbol = ident.symbol;
@@ -684,20 +722,20 @@ impl<'ast> Lowerer<'ast> {
 
 		if let Some(result) = resolved {
 			let inst = match result {
-				ResolveResult::FoundAndIsLocalStackAllocated(vuir) => match rhs_ctx {
+				ResolveResult::FoundAndIsLocalStackAllocated(vuir) => match ctx.result_location {
 					ExprResultLocation::GetAddressOf => vuir,
 					_ => {
 						let loaded = self.inst(block_scope, vuir::Opcode::Load { src: vuir, span });
-						self.rvalue(block_scope, loaded, rhs_ctx, span)
+						self.rvalue(block_scope, loaded, ctx, span)
 					},
 				},
-				ResolveResult::FoundAndIsLocalValue(vuir) => self.rvalue(block_scope, vuir, rhs_ctx, span),
+				ResolveResult::FoundAndIsLocalValue(vuir) => self.rvalue(block_scope, vuir, ctx, span),
 				ResolveResult::FoundAndIsDecl => {
-					let val = match rhs_ctx {
+					let val = match ctx.result_location {
 						ExprResultLocation::GetAddressOf => return Some(self.inst(block_scope, vuir::Opcode::DeclRef(*ident))),
 						_ => self.inst(block_scope, vuir::Opcode::DeclVal(*ident)),
 					};
-					self.rvalue(block_scope, val, rhs_ctx, span)
+					self.rvalue(block_scope, val, ctx, span)
 				},
 				ResolveResult::Capture {
 					inst,
@@ -744,14 +782,13 @@ impl<'ast> Lowerer<'ast> {
 				ast::FloatSuffix::F128 => self.cu.values.common.f128_t,
 			}),
 			ast::Type::Bool => self.cu.values.common.bool_t.into(),
-			ast::Type::Any => self.cu.values.common.any_t.into(),
 			ast::Type::Anyptr => self.cu.values.common.anyptr_t.into(),
 			ast::Type::Type => self.cu.values.common.type_t.into(),
 			ast::Type::Anyint => self.cu.values.common.anyint_t.into(),
 			ast::Type::Anyfloat => self.cu.values.common.anyfloat_t.into(),
 			ast::Type::Never => self.cu.values.common.never_t.into(),
 			ast::Type::Ptr { ty, modifiers } => {
-				let pointee = self.lower_expr(block_scope, ty, ExprResultLocation::None);
+				let pointee = self.lower_expr(block_scope, ty, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::TypePtr {
 					pointee,
 					is_const: modifiers.is_const,
@@ -763,8 +800,8 @@ impl<'ast> Lowerer<'ast> {
 				todo!()
 			},
 			ast::Type::Slice { ty, modifiers, sentinel } => {
-				let elem = self.lower_expr(block_scope, ty, ExprResultLocation::None);
-				let sentinel = sentinel.map(|s| self.lower_expr(block_scope, s, ExprResultLocation::None));
+				let elem = self.lower_expr(block_scope, ty, ExprContext::None);
+				let sentinel = sentinel.map(|s| self.lower_expr(block_scope, s, ExprContext::None));
 				self.inst(block_scope, vuir::Opcode::TypeSlice {
 					elem,
 					is_const: modifiers.is_const,
@@ -777,12 +814,10 @@ impl<'ast> Lowerer<'ast> {
 				size,
 				sentinel,
 			} => {
-				let elem = self.lower_expr(block_scope, ty, ExprResultLocation::None);
-				let len = size
-					.map(|size| self.lower_expr(block_scope, size, ExprResultLocation::None))
-					.unwrap();
+				let elem = self.lower_expr(block_scope, ty, ExprContext::None);
+				let len = size.map(|size| self.lower_expr(block_scope, size, ExprContext::None)).unwrap();
 
-				let sentinel = sentinel.map(|s| self.lower_expr(block_scope, s, ExprResultLocation::None));
+				let sentinel = sentinel.map(|s| self.lower_expr(block_scope, s, ExprContext::None));
 				self.inst(block_scope, vuir::Opcode::TypeArray {
 					elem,
 					is_const: *is_const,
@@ -799,7 +834,6 @@ impl<'ast> Lowerer<'ast> {
 			ast::Type::Fn(fn_sig) => {
 				todo!()
 			},
-			ast::Type::Generic => self.cu.values.common.any_t.into(),
 			ast::Type::Struct(r#struct) => self.lower_struct(block_scope, r#struct, naming).into_ref(),
 			ast::Type::Enum(r#enum) => self.lower_enum(block_scope, r#enum, naming).into_ref(),
 			ast::Type::Union(u) => self.lower_union(block_scope, u, naming).into_ref(),
@@ -813,10 +847,8 @@ impl<'ast> Lowerer<'ast> {
 		is_comptime: bool,
 		is_mutable: bool,
 	) -> (vuir::InstructionRef, ScopeId) {
-		let (var, rhs_ctx, is_comptime) = if let Some(ty) = binding.ty {
-			let ty = self.wrap_in_comptime_block(block_scope, |this, block| {
-				this.lower_expr(block_scope, ty, ExprResultLocation::None)
-			});
+		let (var, ctx, is_comptime) = if let Some(ty) = binding.ty {
+			let ty = self.wrap_in_comptime_block(block_scope, |this, block| this.lower_expr(block_scope, ty, ExprContext::None));
 			let (var, is_comptime) = match (is_comptime, is_mutable) {
 				(false, false) => (
 					self.inst_id(block_scope, vuir::Opcode::StackAlloc {
@@ -853,9 +885,12 @@ impl<'ast> Lowerer<'ast> {
 			};
 			(
 				var,
-				ExprResultLocation::StoreToPtr {
-					ptr: var.as_ref(),
-					span: binding.name.span,
+				ExprContext {
+					result_location: ExprResultLocation::StoreToPtr {
+						ptr: var.as_ref(),
+						span: binding.name.span,
+					},
+					context: ExprContextKind::None,
 				},
 				is_comptime,
 			)
@@ -892,9 +927,12 @@ impl<'ast> Lowerer<'ast> {
 			};
 			(
 				var,
-				ExprResultLocation::StoreToInferredPtr {
-					ptr: var.as_ref(),
-					span: binding.name.span,
+				ExprContext {
+					result_location: ExprResultLocation::StoreToInferredPtr {
+						ptr: var.as_ref(),
+						span: binding.name.span,
+					},
+					context: ExprContextKind::None,
 				},
 				is_comptime,
 			)
@@ -904,14 +942,14 @@ impl<'ast> Lowerer<'ast> {
 		if is_comptime {
 			let name = binding.name.symbol;
 			let _ = self.wrap_in_comptime_block(block_scope, |this, block| {
-				this.lower_expr_named(block_scope, binding.val, rhs_ctx, NamingKind::Named(name))
+				this.lower_expr_named(block_scope, binding.val, ctx, NamingKind::Named(name))
 			});
 		} else {
-			let _ = self.lower_expr_named(block_scope, binding.val, rhs_ctx, NamingKind::FromPreviousStackAlloc);
+			let _ = self.lower_expr_named(block_scope, binding.val, ctx, NamingKind::FromPreviousStackAlloc);
 		}
 
 		// if inferred, directly reify the allocation
-		let var = if let ExprResultLocation::StoreToInferredPtr { ptr, .. } = rhs_ctx {
+		let var = if let ExprResultLocation::StoreToInferredPtr { ptr, .. } = ctx.result_location {
 			self.inst_id(block_scope, vuir::Opcode::ReifyInferredAlloc {
 				alloc: ptr,
 				span: binding.name.span,
@@ -946,13 +984,13 @@ impl<'ast> Lowerer<'ast> {
 		// Decl value
 		let value = {
 			let scope = self.stack_block(block_scope, BlockKind::Body);
-			let init_rhs_ctx = if let Some(ty) = binding.ty {
-				let ty = self.lower_expr(block_scope, ty, ExprResultLocation::None);
-				ExprResultLocation::CoerceToTy(ty)
+			let init_ctx = if let Some(ty) = binding.ty {
+				let ty = self.lower_expr(block_scope, ty, ExprContext::None);
+				ExprContext::coerce_to_ty(ty)
 			} else {
-				ExprResultLocation::None
+				ExprContext::None
 			};
-			let init = self.lower_decl_init_expr(*scope, binding.val, init_rhs_ctx);
+			let init = self.lower_decl_init_expr(*scope, binding.val, init_ctx);
 			self.inst(block_scope, vuir::Opcode::BreakComptime { block: decl, value: init });
 			self.collect_instructions_and_unstack_block(scope)
 		};
@@ -990,15 +1028,15 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		expr: &'ast ast::Expr,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 		naming: vuir::NamingKind,
 	) -> vuir::InstructionRef {
 		match expr.kind {
 			ast::ExprKind::Type(r#type) => {
 				let inst = self.lower_type(block_scope, r#type, naming, expr.span);
-				self.rvalue(block_scope, inst, rhs_ctx, expr.span)
+				self.rvalue(block_scope, inst, ctx, expr.span)
 			},
-			_ => self.lower_expr(block_scope, expr, rhs_ctx),
+			_ => self.lower_expr(block_scope, expr, ctx),
 		}
 	}
 
@@ -1006,9 +1044,9 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		expr: &'ast ast::Expr,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> vuir::InstructionRef {
-		if let Some(inst) = self.try_lower_linear_unary_expr(block_scope, expr, rhs_ctx) {
+		if let Some(inst) = self.try_lower_linear_unary_expr(block_scope, expr, ctx) {
 			return inst;
 		}
 
@@ -1018,7 +1056,23 @@ impl<'ast> Lowerer<'ast> {
 		}
 
 		let inst = match expr.kind {
-			ast::ExprKind::FnCall(&ast::FnCall { callee, generics, args }) => {
+			ast::ExprKind::FnCall(&ast::FnCall { callee, args }) => {
+				if let ast::ExprKind::Ident(ident) = callee.kind
+					&& ident.symbol.as_ref() == "@type_of"
+				{
+					let [ast::Arg::Positional(value)] = args else {
+						self.errors.push(
+							Diagnostic::error()
+								.with_message("@type_of expects exactly one positional argument")
+								.with_label(Label::primary().with_span(self.diag_span(expr.span))),
+						);
+						return self.inst_invalid(block_scope);
+					};
+					let value = self.lower_expr(block_scope, value, ExprContext::None);
+					let ty = self.inst(block_scope, vuir::Opcode::TypeOf { value });
+					return self.rvalue(block_scope, ty, ctx, expr.span);
+				}
+
 				// if the fn call has a field access, we must emit a FnCallField since we must first access the receiver
 				// then dereference the receiver ptr to get the namepace type to then get the proper function by the field name
 				enum CallKind {
@@ -1030,65 +1084,37 @@ impl<'ast> Lowerer<'ast> {
 				}
 				let call_kind = match callee.kind {
 					ast::ExprKind::FieldAccess(field_access) => {
-						let receiver = self.lower_expr(block_scope, field_access.lhs, ExprResultLocation::GetAddressOf);
+						let receiver = self.lower_expr(block_scope, field_access.lhs, ExprContext::GetAddressOf);
 						CallKind::Field {
 							receiver,
 							field: field_access.field,
 						}
 					},
-					_ => CallKind::Direct(self.lower_expr(block_scope, callee, ExprResultLocation::None)),
+					_ => CallKind::Direct(self.lower_expr(block_scope, callee, ExprContext::None)),
 				};
 
 				// get return type before call instruction as it directly depend on its value
-				let ret_ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx);
+				let ret_ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx);
 
 				// now emit the future call instruction and lower arguments
 				let call_inst = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
-				// Lower explicit generic arguments
-				let mut generic_args = BumpVec::with_capacity_in(generics.len(), self.instructions_payload_alloc);
-
 				let mut fn_args = BumpVec::with_capacity_in(args.len(), self.instructions_payload_alloc);
 
-				for generic in generics {
-					// For now, we don't have the type info to coerce
-					let arg_block_scope = self.stack_block(block_scope, BlockKind::Body);
-					let lowered_arg = self.lower_expr(*arg_block_scope, generic.value, ExprResultLocation::None);
-					self.inst(*arg_block_scope, vuir::Opcode::BreakComptime {
-						block: call_inst,
-						value: lowered_arg,
-					});
-					let arg_body = self.collect_instructions_and_unstack_block(arg_block_scope);
-
-					fn_args.push(vuir::FnCallArg {
-						name: Some(generic.ident.symbol),
-						body: arg_body,
-						span: expr.span,
-					});
-				}
-
-				// Collect all arguments preserving their names/positions
-				for (i, arg) in args.iter().enumerate() {
-					let (arg_name, arg_expr, span, arg_rhs_ctx) = match arg {
-						ast::Arg::Named { name, value } => (
-							Some(name.symbol),
-							*value,
-							name.span,
-							ExprResultLocation::CoerceToTy(call_inst.as_ref()), // in sema call analysis we will properly resolve the type
-						),
-						ast::Arg::Positional(value) => {
-							(
-								None,
-								*value,
-								value.span,
-								ExprResultLocation::CoerceToTy(call_inst.as_ref()), // in sema call analysis we will properly resolve the type
-							)
-						},
+				// collect all arguments preserving their names/positions
+				for arg in args {
+					let (arg_name, arg_expr, span) = match arg {
+						ast::Arg::Named { name, value } => (Some(name.symbol), *value, name.span),
+						ast::Arg::Positional(value) => (None, *value, value.span),
 					};
 
-					// For now, we don't have the type info to coerce
+					let arg_ctx = match arg_expr.kind {
+						ast::ExprKind::StructInit(init) if init.ty.is_none() => ExprContext::coerce_to_ty(call_inst.as_ref()),
+						ast::ExprKind::ArrayInit(init) if init.ty.is_none() => ExprContext::coerce_to_ty(call_inst.as_ref()),
+						_ => ExprContext::None,
+					};
 					let arg_block_scope = self.stack_block(block_scope, BlockKind::Body);
-					let lowered_arg = self.lower_expr(*arg_block_scope, arg_expr, arg_rhs_ctx);
+					let lowered_arg = self.lower_expr(*arg_block_scope, arg_expr, arg_ctx);
 					self.inst(*arg_block_scope, vuir::Opcode::BreakComptime {
 						block: call_inst,
 						value: lowered_arg,
@@ -1129,7 +1155,6 @@ impl<'ast> Lowerer<'ast> {
 					CallKind::Direct(fun) => {
 						self.instructions[call_inst] = vuir::Opcode::FnCall {
 							fun,
-							generic_args: generic_args.into_bump_slice(),
 							args: fn_args.into_bump_slice(),
 							ret_ty,
 							span: expr.span,
@@ -1139,7 +1164,6 @@ impl<'ast> Lowerer<'ast> {
 						self.instructions[call_inst] = vuir::Opcode::FnCallWithFieldPtrReceiver {
 							field_ptr: receiver,
 							field_name: *field,
-							generic_args: generic_args.into_bump_slice(),
 							args: fn_args.into_bump_slice(),
 							ret_ty,
 							span: expr.span,
@@ -1149,10 +1173,10 @@ impl<'ast> Lowerer<'ast> {
 
 				call_inst.as_ref()
 			},
-			ast::ExprKind::FieldAccess(path) => return self.lower_field_access(block_scope, path, rhs_ctx), /* lower_path handles rvalue */
+			ast::ExprKind::FieldAccess(path) => return self.lower_field_access(block_scope, path, ctx), /* lower_path handles rvalue */
 			ast::ExprKind::Ident(ident) => {
 				return self
-					.lower_ident(block_scope, ident, rhs_ctx, expr.span)
+					.lower_ident(block_scope, ident, ctx, expr.span)
 					.unwrap_or_else(|| self.inst_invalid(block_scope));
 			},
 			ast::ExprKind::Lit(lit) => match lit {
@@ -1190,97 +1214,97 @@ impl<'ast> Lowerer<'ast> {
 				ast::Lit::Null | ast::Lit::Char(..) => todo!(),
 			},
 			ast::ExprKind::Undefined => {
-				let ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx);
+				let ty = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx);
 				self.inst(block_scope, vuir::Opcode::Undefined { ty, span: expr.span })
 			},
 
 			// arithmetic
 			ast::ExprKind::Add(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Add { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::AddSat(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::AddSat { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Sub(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Sub { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::SubSat(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::SubSat { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Mul(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Mul { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::MulSat(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::MulSat { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Div(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Div { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Rem(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Rem { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Lt(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Lt { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Lte(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Lte { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Gt(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Gt { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Gte(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Gte { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BoolAnd(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BoolAnd { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BoolOr(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BoolOr { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Eq(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Eq { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Neq(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Neq { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Type(ty) => self.lower_type(block_scope, ty, NamingKind::Anonymous, expr.span),
 			ast::ExprKind::StructInit(init) => {
 				let struct_ty = {
 					if let Some(explicit_ty) = init.ty {
-						self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
-					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+						self.lower_expr(block_scope, explicit_ty, ExprContext::None)
+					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx) {
 						ty
 					} else {
 						self.errors.push(
@@ -1300,8 +1324,9 @@ impl<'ast> Lowerer<'ast> {
 						let ty = self.inst(block_scope, vuir::Opcode::StructInitTypeOfField {
 							r#struct: struct_ty,
 							field: field.ident.symbol,
+							span: field.ident.span,
 						});
-						let value = self.lower_expr(block_scope, field.value, ExprResultLocation::CoerceToTy(ty));
+						let value = self.lower_expr(block_scope, field.value, ExprContext::coerce_to_ty(ty));
 						vuir::AdtInitField {
 							name: field.ident,
 							value,
@@ -1322,8 +1347,8 @@ impl<'ast> Lowerer<'ast> {
 			ast::ExprKind::ArrayInit(init) => {
 				let array_ty = {
 					if let Some(explicit_ty) = init.ty {
-						self.lower_expr(block_scope, explicit_ty, ExprResultLocation::None)
-					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
+						self.lower_expr(block_scope, explicit_ty, ExprContext::None)
+					} else if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx) {
 						ty
 					} else {
 						self.errors.push(
@@ -1338,7 +1363,7 @@ impl<'ast> Lowerer<'ast> {
 				let mut elements = BumpVec::with_capacity_in(init.elements.len(), self.instructions_payload_alloc);
 				init.elements
 					.iter()
-					.map(|elem| self.lower_expr(block_scope, elem, ExprResultLocation::None))
+					.map(|elem| self.lower_expr(block_scope, elem, ExprContext::None))
 					.collect_into(&mut elements);
 
 				self.inst(block_scope, vuir::Opcode::AggregateInit {
@@ -1351,7 +1376,7 @@ impl<'ast> Lowerer<'ast> {
 					span: expr.span,
 				})
 			},
-			ast::ExprKind::If(r#if) => self.lower_expr_if(block_scope, r#if, rhs_ctx),
+			ast::ExprKind::If(r#if) => self.lower_expr_if(block_scope, r#if, ctx),
 			kind @ (ast::ExprKind::Block(b) | ast::ExprKind::Loop(b)) => {
 				if let Some(label) = b.label {
 					self.check_label_already_defined(block_scope, label);
@@ -1408,7 +1433,7 @@ impl<'ast> Lowerer<'ast> {
 
 				// branch(!cond, then=[break from loop], else=[])
 				{
-					let cond = (self.lower_expr(*loop_scope, w.cond, ExprResultLocation::None), w.cond.span);
+					let cond = (self.lower_expr(*loop_scope, w.cond, ExprContext::None), w.cond.span);
 					let cond = (
 						self.inst(*loop_scope, vuir::Opcode::BitNot {
 							op: cond.0,
@@ -1472,14 +1497,14 @@ impl<'ast> Lowerer<'ast> {
 				loop_block.as_ref()
 			},
 
-			ast::ExprKind::AddressOf(addr_of) => become self.lower_expr(block_scope, addr_of, ExprResultLocation::GetAddressOf),
+			ast::ExprKind::AddressOf(addr_of) => become self.lower_expr(block_scope, addr_of, ExprContext::GetAddressOf),
 			ast::ExprKind::Deref(deref) => {
 				// If the context require the address of the deref,
 				// we just lower the inner expression without generating a load
-				if matches!(rhs_ctx, ExprResultLocation::GetAddressOf) {
-					become self.lower_expr(block_scope, deref, ExprResultLocation::None)
+				if matches!(ctx.result_location, ExprResultLocation::GetAddressOf) {
+					become self.lower_expr(block_scope, deref, ExprContext::None)
 				} else {
-					let expr = self.lower_expr(block_scope, deref, ExprResultLocation::None);
+					let expr = self.lower_expr(block_scope, deref, ExprContext::None);
 					self.inst(block_scope, vuir::Opcode::Load {
 						src: expr,
 						span: deref.span,
@@ -1488,52 +1513,52 @@ impl<'ast> Lowerer<'ast> {
 			},
 			// bitwise
 			ast::ExprKind::Shl(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Shl { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::ShlSat(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::ShlSat { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::ShlWrap(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::ShlWrap { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::Shr(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::Shr { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::ShrSat(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::ShrSat { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::ShrWrap(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::ShrWrap { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BitAnd(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BitAnd { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BitOr(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BitOr { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BitXor(&ast::BinOp { lhs, rhs }) => {
-				let lhs = self.lower_expr(block_scope, lhs, ExprResultLocation::None);
-				let rhs = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+				let lhs = self.lower_expr(block_scope, lhs, ExprContext::None);
+				let rhs = self.lower_expr(block_scope, rhs, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BitXor { lhs, rhs, span: expr.span })
 			},
 			ast::ExprKind::BitNot(op) => {
-				let op = self.lower_expr(block_scope, op, ExprResultLocation::None);
+				let op = self.lower_expr(block_scope, op, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BitNot { op, span: expr.span })
 			},
 
@@ -1542,12 +1567,12 @@ impl<'ast> Lowerer<'ast> {
 				if let ast::ExprKind::Lit(integer @ ast::Lit::Integer { .. }) = op.kind {
 					self.lower_lit_int(integer, false)
 				} else {
-					let op = self.lower_expr(block_scope, op, ExprResultLocation::None);
+					let op = self.lower_expr(block_scope, op, ExprContext::None);
 					self.inst(block_scope, vuir::Opcode::Negate { op, span: expr.span })
 				}
 			},
 			ast::ExprKind::Not(op) => {
-				let op = self.lower_expr(block_scope, op, ExprResultLocation::None);
+				let op = self.lower_expr(block_scope, op, ExprContext::None);
 				self.inst(block_scope, vuir::Opcode::BoolNot { op, span: expr.span })
 			},
 			ast::ExprKind::Switch(sw) => {
@@ -1562,7 +1587,7 @@ impl<'ast> Lowerer<'ast> {
 				});
 
 				// Lower the switch expression as the operand
-				let operand_ref = self.lower_expr(*switch_scope, sw.expr, ExprResultLocation::None);
+				let operand_ref = self.lower_expr(*switch_scope, sw.expr, ExprContext::None);
 
 				// Get the type of the operand for enum variant inference in case patterns
 				let operand_ty = self.inst(*switch_scope, vuir::Opcode::TypeOf { value: operand_ref });
@@ -1571,17 +1596,17 @@ impl<'ast> Lowerer<'ast> {
 				let mut multi_cases = BumpVec::new_in(self.instructions_payload_alloc);
 
 				// the result location for switch cases is either none or coerced to the switch expected ty
-				let switch_case_rhs_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
-					ExprResultLocation::CoerceToTy(ty)
+				let switch_case_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx) {
+					ExprContext::coerce_to_ty(ty)
 				} else {
-					ExprResultLocation::None
+					ExprContext::None
 				};
 				for case in sw.cases {
 					assert!(!case.patterns.is_empty());
 
 					if case.patterns.len() == 1 {
 						// Single-pattern case: lower pattern first (needed for capture)
-						let pattern = self.lower_expr(*switch_scope, &case.patterns[0], ExprResultLocation::None);
+						let pattern = self.lower_expr(*switch_scope, &case.patterns[0], ExprContext::None);
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
@@ -1610,7 +1635,7 @@ impl<'ast> Lowerer<'ast> {
 								*scope
 							};
 
-							let (val, value_span) = self.lower_switch_body(body_scope, case.body, switch_case_rhs_ctx);
+							let (val, value_span) = self.lower_switch_body(body_scope, case.body, switch_case_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1640,7 +1665,7 @@ impl<'ast> Lowerer<'ast> {
 
 						let body = {
 							let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-							let (val, value_span) = self.lower_switch_body(*scope, case.body, switch_case_rhs_ctx);
+							let (val, value_span) = self.lower_switch_body(*scope, case.body, switch_case_ctx);
 							if !scope.block(self).ends_with_never(self) {
 								self.inst(*scope, vuir::Opcode::Break {
 									block: switch_block,
@@ -1654,7 +1679,7 @@ impl<'ast> Lowerer<'ast> {
 						let mut items = BumpVec::new_in(self.instructions_payload_alloc);
 						let mut patterns_span = case.patterns[0].span;
 						for pattern in case.patterns {
-							let item = self.lower_expr(*switch_scope, pattern, ExprResultLocation::None);
+							let item = self.lower_expr(*switch_scope, pattern, ExprContext::None);
 							items.push(item);
 							patterns_span = (patterns_span, pattern.span).into();
 						}
@@ -1670,7 +1695,7 @@ impl<'ast> Lowerer<'ast> {
 				// Lower else body
 				let else_body = if let Some(else_body) = sw.else_body {
 					let scope = self.stack_block(block_scope, BlockKind::Branch(switch_block.as_ref()));
-					let (val, value_span) = self.lower_switch_body(*scope, else_body, switch_case_rhs_ctx);
+					let (val, value_span) = self.lower_switch_body(*scope, else_body, switch_case_ctx);
 					if !scope.block(self).ends_with_never(self) {
 						self.inst(*scope, vuir::Opcode::Break {
 							block: switch_block,
@@ -1710,16 +1735,14 @@ impl<'ast> Lowerer<'ast> {
 				switch_block.as_ref()
 			},
 			ast::ExprKind::Index(index) => {
-				let array = self.lower_expr(block_scope, index.collection, ExprResultLocation::GetAddressOf);
+				let array = self.lower_expr(block_scope, index.collection, ExprContext::GetAddressOf);
 				let index = match index.kind {
-					ast::IndexKind::Index(index) => self.lower_expr(
-						block_scope,
-						index,
-						ExprResultLocation::CoerceToTy(self.cu.values.common.usize_t.into()),
-					),
+					ast::IndexKind::Index(index) => {
+						self.lower_expr(block_scope, index, ExprContext::coerce_to_ty(self.cu.values.common.usize_t.into()))
+					},
 					ast::IndexKind::Range { .. } | ast::IndexKind::RangeInclusive { .. } => todo!(),
 				};
-				return match rhs_ctx {
+				return match ctx.result_location {
 					ExprResultLocation::GetAddressOf => self.inst(block_scope, vuir::Opcode::ArrayIndexElemPtr {
 						array_ptr: array,
 						index,
@@ -1731,29 +1754,37 @@ impl<'ast> Lowerer<'ast> {
 							index,
 							span: expr.span,
 						});
-						self.rvalue(block_scope, inst, rhs_ctx, expr.span)
+						self.rvalue(block_scope, inst, ctx, expr.span)
 					},
 				};
+			},
+			ast::ExprKind::Discard => {
+				self.errors.push(
+					Diagnostic::error()
+						.with_message("unexpected discard")
+						.with_label(Label::primary().with_span(self.diag_span(expr.span))),
+				);
+				return self.cu.values.common.unreachable_value.into();
 			},
 			kind => todo!("expr {:?} not supported yet", kind),
 		};
 
 		// default expression rvalue handling
-		self.rvalue(block_scope, inst, rhs_ctx, expr.span)
+		self.rvalue(block_scope, inst, ctx, expr.span)
 	}
 
 	fn lower_switch_body(
 		&mut self,
 		block_scope: ScopeId,
 		body: &'ast ast::SwitchBody,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> (vuir::InstructionRef, Span) {
 		match body {
 			ast::SwitchBody::Block(block) => {
 				self.lower_block(block_scope, block);
 				(vuir::InstructionRef::Interned(self.cu.values.common.void_value), block.span)
 			},
-			ast::SwitchBody::Expr(expr) => (self.lower_expr(block_scope, expr, rhs_ctx), expr.span),
+			ast::SwitchBody::Expr(expr) => (self.lower_expr(block_scope, expr, ctx), expr.span),
 		}
 	}
 
@@ -1761,7 +1792,7 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		expr: &'ast ast::Expr,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> Option<vuir::InstructionRef> {
 		#[derive(Copy, Clone)]
 		enum UnaryLayer {
@@ -1800,7 +1831,7 @@ impl<'ast> Lowerer<'ast> {
 			return None;
 		}
 
-		let mut inst = self.lower_expr(block_scope, current, ExprResultLocation::None);
+		let mut inst = self.lower_expr(block_scope, current, ExprContext::default());
 		while let Some(layer) = layers.pop() {
 			inst = match layer {
 				UnaryLayer::Pos(_) => inst,
@@ -1810,7 +1841,7 @@ impl<'ast> Lowerer<'ast> {
 			};
 		}
 
-		Some(self.rvalue(block_scope, inst, rhs_ctx, expr.span))
+		Some(self.rvalue(block_scope, inst, ctx, expr.span))
 	}
 
 	fn lower_lit_int(
@@ -1854,20 +1885,20 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		r#if: &'static ast::If,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> vuir::InstructionRef {
-		let cond = (self.lower_expr(block_scope, r#if.cond, ExprResultLocation::None), r#if.cond.span);
-		let branch_rhs_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, rhs_ctx) {
-			ExprResultLocation::CoerceToTy(ty)
+		let cond = (self.lower_expr(block_scope, r#if.cond, ExprContext::None), r#if.cond.span);
+		let branch_ctx = if let Some(ty) = self.try_lower_coerce_into_result_loc_expected_ty(block_scope, ctx) {
+			ExprContext::coerce_to_ty(ty)
 		} else {
-			ExprResultLocation::None
+			ExprContext::None
 		};
 
 		let branch_block = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
 		let then_body = {
 			let scope = self.stack_block(block_scope, BlockKind::Branch(branch_block.as_ref()));
-			self.lower_if_body(*scope, r#if.then_body, branch_block, branch_rhs_ctx);
+			self.lower_if_body(*scope, r#if.then_body, branch_block, branch_ctx);
 
 			self.collect_instructions_and_unstack_block(scope)
 		};
@@ -1877,14 +1908,14 @@ impl<'ast> Lowerer<'ast> {
 			if let Some(r#else) = r#if.else_block {
 				match &r#else {
 					ast::ElseBlock::If(r#if) => {
-						let value = self.lower_expr_if(*scope, r#if, branch_rhs_ctx);
+						let value = self.lower_expr_if(*scope, r#if, branch_ctx);
 						self.inst(*scope, vuir::Opcode::Break {
 							block: branch_block,
 							value,
 							value_span: r#if.span,
 						});
 					},
-					ast::ElseBlock::Body(body) => self.lower_if_body(*scope, body, branch_block, branch_rhs_ctx),
+					ast::ElseBlock::Body(body) => self.lower_if_body(*scope, body, branch_block, branch_ctx),
 				}
 			}
 
@@ -1922,7 +1953,7 @@ impl<'ast> Lowerer<'ast> {
 		block_scope: ScopeId,
 		body: &'ast ast::IfBody,
 		branch_block: vuir::InstructionId,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) {
 		match body {
 			ast::IfBody::Block(block) => {
@@ -1936,7 +1967,7 @@ impl<'ast> Lowerer<'ast> {
 				}
 			},
 			ast::IfBody::Expr(expr) => {
-				let value = self.lower_expr(block_scope, expr, rhs_ctx);
+				let value = self.lower_expr(block_scope, expr, ctx);
 				if !self.scopes[block_scope].as_block().ends_with_never(self) {
 					self.inst(block_scope, vuir::Opcode::Break {
 						block: branch_block,
@@ -1954,16 +1985,16 @@ impl<'ast> Lowerer<'ast> {
 		&mut self,
 		block_scope: ScopeId,
 		expr: &'ast ast::Expr,
-		rhs_ctx: ExprResultLocation,
+		ctx: ExprContext,
 	) -> vuir::InstructionRef {
 		match expr.kind {
 			ast::ExprKind::Type(&ast::Type::Struct(r#struct)) => {
-				// TODO(zino): rhs_ctx propagate here
+				// TODO(zino): ctx propagate here
 				self.lower_struct(block_scope, r#struct, vuir::NamingKind::FromDecl).into_ref()
 			},
-			// TODO(zino): rhs_ctx propagate here
+			// TODO(zino): ctx propagate here
 			ast::ExprKind::Type(&ast::Type::Enum(r#enum)) => self.lower_enum(block_scope, r#enum, vuir::NamingKind::FromDecl).into_ref(),
-			_ => become self.lower_expr(block_scope, expr, rhs_ctx),
+			_ => become self.lower_expr(block_scope, expr, ctx),
 		}
 	}
 
@@ -1983,12 +2014,12 @@ impl<'ast> Lowerer<'ast> {
 				self.lower_var_binding(block_scope, binding, false, matches!(kind, ast::StatementKind::Var(_)))
 			},
 			ast::StatementKind::ComptimeVarBinding(binding) => self.lower_var_binding(block_scope, binding, true, true),
-			ast::StatementKind::Expr(expr) => (self.lower_expr(block_scope, expr, ExprResultLocation::None), block_scope),
+			ast::StatementKind::Expr(expr) => (self.lower_expr(block_scope, expr, ExprContext::None), block_scope),
 			ast::StatementKind::Return(value) => {
 				let value = value.as_ref().map(|expr| {
 					// Create the return type reference first so we can use it as a hint
 					let ret_type = self.inst(block_scope, vuir::Opcode::TypeOfCurFnRet);
-					let value = self.lower_expr(block_scope, expr, ExprResultLocation::CoerceToTy(ret_type));
+					let value = self.lower_expr(block_scope, expr, ExprContext::coerce_to_ty(ret_type));
 					self.inst(block_scope, vuir::Opcode::Coerce {
 						value,
 						into: ret_type,
@@ -2028,7 +2059,7 @@ impl<'ast> Lowerer<'ast> {
 				if let Some((_break_block_scope, break_block_inst)) = break_block_scope {
 					let (value, value_span) = value
 						.as_ref()
-						.map(|expr| (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span))
+						.map(|expr| (self.lower_expr(block_scope, expr, ExprContext::None), expr.span))
 						.unwrap_or((vuir::InstructionRef::Interned(self.cu.values.common.void_value), stmt.span));
 
 					let inst = self.inst(block_scope, vuir::Opcode::Break {
@@ -2135,18 +2166,21 @@ impl<'ast> Lowerer<'ast> {
 				(inst, block_scope)
 			},
 			ast::StatementKind::Assign { lhs, op, rhs } => {
-				let lhs_addr = self.lower_expr(block_scope, lhs, ExprResultLocation::GetAddressOf);
+				let lhs_addr = self.lower_expr(block_scope, lhs, ExprContext::GetAddressOf);
 				let inst = match op {
-					ast::AssignOp::Assign => self.lower_expr(block_scope, rhs, ExprResultLocation::StoreToPtr {
-						ptr: lhs_addr,
-						span: lhs.span,
+					ast::AssignOp::Assign => self.lower_expr(block_scope, rhs, ExprContext {
+						result_location: ExprResultLocation::StoreToPtr {
+							ptr: lhs_addr,
+							span: lhs.span,
+						},
+						context: ExprContextKind::None,
 					}),
 					compound_op => {
 						let lhs_val = self.inst(block_scope, vuir::Opcode::Load {
 							src: lhs_addr,
 							span: lhs.span,
 						});
-						let rhs_val = self.lower_expr(block_scope, rhs, ExprResultLocation::None);
+						let rhs_val = self.lower_expr(block_scope, rhs, ExprContext::None);
 						let result = match compound_op {
 							ast::AssignOp::Add => self.inst(block_scope, vuir::Opcode::Add {
 								lhs: lhs_val,
@@ -2263,7 +2297,7 @@ impl<'ast> Lowerer<'ast> {
 			},
 			ast::StatementKind::Defer(expr) => {
 				let defer_body_scope = self.stack_block(block_scope, BlockKind::Body);
-				let _ = self.lower_expr(*defer_body_scope, expr, ExprResultLocation::None);
+				let _ = self.lower_expr(*defer_body_scope, expr, ExprContext::None);
 				let defer_body = self.collect_instructions_and_unstack_block(defer_body_scope);
 				let defer_scope = self.scopes.push(Scope::Defer {
 					parent: block_scope,
@@ -2305,49 +2339,7 @@ impl<'ast> Lowerer<'ast> {
 				let params_start = self.uir_scopes_instructions.len();
 
 				// if true it means some expression resolved to a parameter, so basically the expression is generic
-				// we replace later on in sema every generic parameters or return type by the generic poison type
 				let mut any_param_resolved_atleast_once = false;
-
-				// lower generic types as regular fn params as they are a shortcut to
-				// `const {name}: type` must be done before fn params
-				for generic in fun.generics {
-					let inst = self.inst_id(*fn_scope, vuir::Opcode::Invalid);
-
-					let type_body = {
-						let type_scope = self.stack_block(block_scope, BlockKind::Body);
-						let type_start = self.uir_scopes_instructions.len();
-						self.inst(*type_scope, vuir::Opcode::BreakComptime {
-							block: inst,
-							value: vuir::InstructionRef::Interned(self.cu.values.common.type_t),
-						});
-						let type_end = self.uir_scopes_instructions.len();
-						let mut type_body = BumpVec::new_in(self.instructions_payload_alloc);
-						self.uir_scopes_instructions[type_start..type_end]
-							.iter()
-							.collect_into(&mut type_body);
-						self.unstack_block(type_scope);
-						type_body
-					};
-
-					self.instructions[inst] = vuir::Opcode::DeclFnParam {
-						name: generic.ident,
-						type_body: type_body.into_bump_slice(),
-						comptime: true,
-						generic: true,
-						span: generic.ident.span,
-					};
-
-					// SAFETY: any_param_resolved_atleast_once lives as long as params_scope
-					params_scope = unsafe {
-						self.scopes.push(Scope::LocalValue {
-							parent: params_scope,
-							name: generic.ident.symbol,
-							node: generic.id,
-							vuir_inst: inst.as_ref(),
-							was_resolved_atleast_once: &raw mut any_param_resolved_atleast_once,
-						})
-					};
-				}
 
 				for param in fun.params {
 					any_param_resolved_atleast_once = false;
@@ -2355,7 +2347,7 @@ impl<'ast> Lowerer<'ast> {
 					let inst = self.inst_id(params_scope, vuir::Opcode::Invalid);
 					let type_body = {
 						let type_scope = self.stack_block(params_scope, BlockKind::Body);
-						let ty = self.lower_expr(*type_scope, param.ty, ExprResultLocation::None);
+						let ty = self.lower_expr(*type_scope, param.ty, ExprContext::None);
 						self.inst(*type_scope, vuir::Opcode::BreakComptime { block: inst, value: ty });
 						self.collect_instructions_and_unstack_block(type_scope)
 					};
@@ -2394,7 +2386,7 @@ impl<'ast> Lowerer<'ast> {
 						let ret_ty = self.lower_expr(
 							*block_scope,
 							fun.ret_ty,
-							ExprResultLocation::CoerceToTy(self.cu.values.common.type_t.into()), // for ret ty we want the type of the expr, therefore coerce to type
+							ExprContext::coerce_to_ty(self.cu.values.common.type_t.into()), // for ret ty we want the type of the expr, therefore coerce to type
 						);
 						self.inst(*block_scope, vuir::Opcode::BreakComptime {
 							block: block_inst,
@@ -2419,8 +2411,7 @@ impl<'ast> Lowerer<'ast> {
 							label: None,
 						});
 						let builtin_callconv_ty = self.inst(*block_scope, vuir::Opcode::TypeBuiltinCallingConvention);
-						let callconv_inst =
-							self.lower_expr(*block_scope, callconv_expr, ExprResultLocation::CoerceToTy(builtin_callconv_ty));
+						let callconv_inst = self.lower_expr(*block_scope, callconv_expr, ExprContext::coerce_to_ty(builtin_callconv_ty));
 						self.inst(*block_scope, vuir::Opcode::BreakComptime {
 							block: block_inst,
 							value: callconv_inst,
@@ -2499,7 +2490,6 @@ impl<'ast> Lowerer<'ast> {
 			let fun_inst = self.inst(*scope, vuir::Opcode::DeclFn {
 				external: fun.block.is_none() && builtin.is_none(),
 				callconv,
-				first_positional_arg_index: if params.is_empty() { None } else { Some(fun.generics.len() as u16) },
 				params: params.into_bump_slice(),
 				var_args: fun.variadic,
 				body: body.into_bump_slice(),
@@ -2552,7 +2542,7 @@ impl<'ast> Lowerer<'ast> {
 			let mut fields = vec![];
 			for field in struct_decl.fields {
 				let ty_block = self.stack_block(struct_scope, BlockKind::Body);
-				let ty_ref = self.lower_expr(*ty_block, field.ty, ExprResultLocation::None);
+				let ty_ref = self.lower_expr(*ty_block, field.ty, ExprContext::None);
 				if !ty_block.block(self).ends_with_never(self) {
 					self.inst(*ty_block, vuir::Opcode::BreakComptime {
 						block: struct_inst,
@@ -2621,7 +2611,7 @@ impl<'ast> Lowerer<'ast> {
 	) -> vuir::InstructionId {
 		let tag_ty = enum_decl
 			.tag_ty
-			.map(|expr| (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span));
+			.map(|expr| (self.lower_expr(block_scope, expr, ExprContext::None), expr.span));
 
 		let enum_inst = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
@@ -2645,7 +2635,7 @@ impl<'ast> Lowerer<'ast> {
 			for variant in enum_decl.variants {
 				let value = variant
 					.value
-					.map(|expr| (self.lower_expr(block_scope, expr, ExprResultLocation::None), expr.span));
+					.map(|expr| (self.lower_expr(block_scope, expr, ExprContext::None), expr.span));
 
 				let associated_decl = match &self.scopes[enum_scope] {
 					Scope::Namespace(namespace) => namespace.decl_to_ast_node.get(&variant.ident.symbol).copied(),
@@ -2750,7 +2740,7 @@ impl<'ast> Lowerer<'ast> {
 			ast::UnionTagKind::Bare => None,
 			ast::UnionTagKind::AutoEnum => Some(None),
 			ast::UnionTagKind::Enum(expr) => {
-				let ref_val = self.lower_expr(block_scope, expr, ExprResultLocation::None);
+				let ref_val = self.lower_expr(block_scope, expr, ExprContext::None);
 				Some(Some((ref_val, expr.span)))
 			},
 		};
@@ -2795,7 +2785,7 @@ impl<'ast> Lowerer<'ast> {
 
 				let ty = field.ty.map(|ty_expr| {
 					let ty_block = self.stack_block(union_scope, BlockKind::Body);
-					let ty_ref = self.lower_expr(*ty_block, ty_expr, ExprResultLocation::None);
+					let ty_ref = self.lower_expr(*ty_block, ty_expr, ExprContext::None);
 					if !ty_block.block(self).ends_with_never(self) {
 						self.inst(*ty_block, vuir::Opcode::BreakComptime {
 							block: union_inst,

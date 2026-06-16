@@ -3,6 +3,7 @@ use std::{
 	time::Duration,
 };
 
+use bitvec::vec::BitVec;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
@@ -41,7 +42,6 @@ pub(super) struct VuirFnInfo<'a> {
 	pub ret_ty: vuir::InstructionId,
 	pub body: &'a [vuir::InstructionId],
 	pub params: &'a [vuir::InstructionId],
-	pub first_positional_arg_index: Option<u16>,
 	pub span: Span,
 	pub builtin: Option<vuir::BuiltinKind>,
 }
@@ -76,76 +76,9 @@ impl<'a> VuirFnInfo<'a> {
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct AnalyzedCallee {
 	pub fun: vtir::InstructionRef,
-
-	// TODO(zino): was used for effect handlers env, but could be repurposed for context, now its always None
-	pub env: Option<vtir::InstructionRef>,
-}
-
-enum UnifyError {
-	/// Same generic param was already bound to a different concrete type
-	Conflict(vuir::InstructionId),
-	/// Type constructors are incompatible (e.g. `*$T` vs `[]u8`)
-	StructureMismatch,
 }
 
 impl<'a> Sema<'a> {
-	/// Walk two type trees in lockstep. Wherever `param_ty` contains a
-	/// GenericPoison(id), record the corresponding piece of `arg_ty` in `substitution_map`
-	///
-	/// Returns:
-	/// - `Ok` on success
-	/// - `Err(Conflict(param_id))` if the same poison was already bound to a different type
-	/// - `Err(StructureMismatch)` if the type constructors are incompatible (e.g. `*$T` vs `[]u8`)
-	fn try_unify_extract(
-		&self,
-		param_ty: value::Index,
-		arg_ty: value::Index,
-		substitution_map: &mut FxHashMap<vuir::InstructionId, value::Index>,
-	) -> Result<(), UnifyError> {
-		if let Some(param_id) = self.cu.values.as_generic_poison(param_ty) {
-			if let Some(&existing) = substitution_map.get(&param_id)
-				&& existing != arg_ty
-			{
-				return Err(UnifyError::Conflict(param_id));
-			}
-			substitution_map.insert(param_id, arg_ty);
-			return Ok(());
-		}
-
-		if param_ty == arg_ty {
-			return Ok(());
-		}
-
-		let pat = self.cu.values.index_to_key(param_ty);
-		let con = self.cu.values.index_to_key(arg_ty);
-
-		match (pat, con) {
-			(value::Key::Type(value::Type::Ptr(p_ptr)), value::Key::Type(value::Type::Ptr(c_ptr))) if p_ptr.is_const == c_ptr.is_const => {
-				self.try_unify_extract(p_ptr.pointee_ty, c_ptr.pointee_ty, substitution_map)
-			},
-			(value::Key::Type(value::Type::Slice(p_sl)), value::Key::Type(value::Type::Slice(c_sl))) => {
-				self.try_unify_extract(p_sl.pointee_ty, c_sl.pointee_ty, substitution_map)
-			},
-			(value::Key::Type(value::Type::Struct(p_ns)), value::Key::Type(value::Type::Struct(c_ns)))
-			| (value::Key::Type(value::Type::Enum(p_ns)), value::Key::Type(value::Type::Enum(c_ns)))
-			| (value::Key::Type(value::Type::Union(p_ns)), value::Key::Type(value::Type::Union(c_ns)))
-				if p_ns.inst == c_ns.inst && p_ns.captures.len() == c_ns.captures.len() =>
-			{
-				for (p_cap, c_cap) in p_ns.captures.iter().zip(c_ns.captures.iter()) {
-					match (p_cap, c_cap) {
-						(value::Capture::Comptime(p_cap), value::Capture::Comptime(c_cap)) => {
-							self.try_unify_extract(*p_cap, *c_cap, substitution_map)?
-						},
-						(value::Capture::Runtime(p_cap), value::Capture::Runtime(c_cap)) if p_cap == c_cap => {},
-						_ => return Err(UnifyError::StructureMismatch),
-					}
-				}
-				Ok(())
-			},
-			_ => Err(UnifyError::StructureMismatch),
-		}
-	}
-
 	pub(super) fn get_vuir_fn_info(
 		&self,
 		func_decl: &value::FnDecl,
@@ -160,7 +93,6 @@ impl<'a> Sema<'a> {
 		let vuir::Opcode::DeclFn {
 			body,
 			params,
-			first_positional_arg_index,
 			ret_ty,
 			span,
 			builtin,
@@ -175,7 +107,6 @@ impl<'a> Sema<'a> {
 			ret_ty: *ret_ty,
 			body,
 			params,
-			first_positional_arg_index: *first_positional_arg_index,
 			span: *span,
 			builtin: *builtin,
 		}
@@ -186,7 +117,6 @@ impl<'a> Sema<'a> {
 		call_vuir_id: vuir::InstructionId,
 		block: super::BlockId,
 		callee: AnalyzedCallee,
-		generic_args: &[vuir::FnCallGenericArg],
 		args: &[vuir::FnCallArg],
 		expected_ret_ty: &Option<vuir::InstructionRef>,
 		receiver: Option<vtir::InstructionRef>,
@@ -220,17 +150,10 @@ impl<'a> Sema<'a> {
 			}
 		};
 
-		let effect_handler_env = callee.env;
-		let hidden_handler_env_param_count = usize::from(effect_handler_env.is_some());
-		let first_user_param = hidden_handler_env_param_count;
-		// Effect params are hidden trailing. Handler env, when present, is hidden physical arg 0.
-		let user_visible_param_count = func_type.params.len().saturating_sub(hidden_handler_env_param_count);
-		let mut resolved_args = vec![None; user_visible_param_count];
+		let mut resolved_args = vec![None; func_type.params.len()];
 		let mut variadic_args: Vec<(vtir::InstructionRef, value::Index, Span)> =
-			Vec::with_capacity(args.len().saturating_sub(user_visible_param_count));
+			Vec::with_capacity(args.len().saturating_sub(func_type.params.len()));
 		let mut param_map: FxHashMap<vuir::InstructionId, vtir::InstructionRef> = FxHashMap::default();
-		// Tracks where each generic param was first inferred: param_id → (type, arg_idx, span)
-		let mut generic_first_resolved: FxHashMap<vuir::InstructionId, (value::Index, usize, Span)> = FxHashMap::default();
 
 		// setup param_map: per-param poison for comptime type params
 		if let Some((_, _, func_vuir_info)) = &static_callee {
@@ -239,10 +162,6 @@ impl<'a> Sema<'a> {
 				else {
 					unreachable!("expected DeclFnParam");
 				};
-				if *comptime {
-					let poison = self.cu.values.make_generic_poison(*param, name.symbol);
-					param_map.insert(*param, poison.into());
-				}
 			}
 		}
 
@@ -253,61 +172,100 @@ impl<'a> Sema<'a> {
 			generic_block
 		});
 
-		if !generic_args.is_empty() {
-			self.push_error(
-				Diagnostic::error()
-					.with_message("generic arguments are not supported here yet")
-					.with_label(Label::primary().with_span(self.diag_span(*span))),
-			);
-			return Err(AnalyzeError::AnalysisFailed);
-		}
-
 		// append receiver if there is one
 		if let Some(receiver) = receiver {
-			let receiver_idx = func_type.first_positional_param.unwrap_or(0) as usize - first_user_param;
-			resolved_args[receiver_idx] = Some((receiver, *span));
+			resolved_args[0] = Some((receiver, *span));
 			if let Some((_, _, func_vuir_info)) = &static_callee {
-				param_map.insert(func_vuir_info.params[receiver_idx], receiver);
+				param_map.insert(func_vuir_info.params[0], receiver);
 			}
 		}
 
-		'arg_loop: for (i, arg) in args.iter().enumerate() {
-			let arg_idx = match arg.name {
-				Some(name) => static_callee
-					.as_ref()
-					.and_then(|(_, _, func_vuir_info)| func_vuir_info.param_idx_by_name(&name)),
-				None => {
-					let idx = func_type
-						.first_positional_param
-						.map(|idx| idx as usize - first_user_param)
-						.unwrap_or(0) + i;
-					let idx = if receiver.is_some() { idx + 1 } else { idx };
-					if idx >= user_visible_param_count { None } else { Some(idx) }
-				},
-			};
+		// check the arg count match parameter count and build input args
+		let input_args = {
+			let mut input_args = Vec::with_capacity(args.len());
+			let mut valid_params = BitVec::<u8>::repeat(false, func_type.params.len());
+			if receiver.is_some() {
+				debug_assert!(!valid_params.is_empty());
+				valid_params.set(0, true);
+			}
 
-			// before proceeding, need to check if the arg is valid
-			let arg_idx = match arg_idx {
-				// it is
+			for (i, arg) in args.iter().enumerate() {
+				let param_idx = match arg.name {
+					Some(name) => static_callee
+						.as_ref()
+						.and_then(|(_, _, func_vuir_info)| func_vuir_info.param_idx_by_name(&name)),
+					None => {
+						let idx = if receiver.is_some() { i + 1 } else { i };
+						(idx < func_type.params.len()).then_some(idx)
+					},
+				};
+
+				let param_idx = match param_idx {
+					Some(idx) => {
+						if valid_params[idx] {
+							self.push_error(
+								Diagnostic::error()
+									.with_message(format!("argument `{}` was provided more than once", param_display_name(idx)))
+									.with_label(Label::primary().with_span(self.diag_span(arg.span))),
+							);
+							return Err(AnalyzeError::AnalysisFailed);
+						}
+						valid_params.set(idx, true);
+						Some(idx)
+					},
+					None if arg.name.is_some() => {
+						let message = if static_callee.is_some() {
+							format!("no parameter named `{}` in function", arg.name.unwrap())
+						} else {
+							format!("named argument `{}` requires a statically known callee", arg.name.unwrap())
+						};
+						self.push_error(
+							Diagnostic::error()
+								.with_message(message)
+								.with_label(Label::primary().with_span(self.diag_span(arg.span))),
+						);
+						return Err(AnalyzeError::AnalysisFailed);
+					},
+					None if func_type.var_args => None,
+					None => {
+						self.push_error(
+							Diagnostic::error()
+								.with_message(format!(
+									"function takes {} parameters but more were supplied",
+									func_type.params.len()
+								))
+								.with_label(Label::primary().with_span(self.diag_span(arg.span))),
+						);
+						return Err(AnalyzeError::AnalysisFailed);
+					},
+				};
+
+				input_args.push((param_idx, arg));
+			}
+
+			let mut missing_params = false;
+			for param_idx in valid_params.iter_zeros() {
+				self.push_error(
+					Diagnostic::error()
+						.with_message(format!("missing argument `{}`", param_display_name(param_idx)))
+						.with_label(Label::primary().with_span(self.diag_span(*span)))
+						.with_note("use `_` to explicitly infer this argument"),
+				);
+				missing_params = true;
+			}
+			if missing_params {
+				return Err(AnalyzeError::AnalysisFailed);
+			}
+
+			input_args
+		};
+
+		'arg_loop: for (param_idx, arg) in input_args {
+			let arg_idx = match param_idx {
 				Some(idx) => idx,
-				// named: name doesn't exist
-				None if arg.name.is_some() => {
-					let message = if static_callee.is_some() {
-						format!("no parameter named `{}` in function", arg.name.unwrap())
-					} else {
-						format!("named argument `{}` requires a statically known callee", arg.name.unwrap())
-					};
-					self.push_error(
-						Diagnostic::error()
-							.with_message(message)
-							.with_label(Label::primary().with_span(self.diag_span(arg.span))),
-					);
-					return Err(AnalyzeError::AnalysisFailed);
-				},
-				// positional: it isn't but the function has var args, assume it is part of its var args then
-				None if func_type.var_args => {
+				None => {
 					// C varargs are promoted below; keep vuir contextual coercions as noops here
-					self.vuir_map.insert(call_vuir_id, self.cu.values.common.generic_poison_t.into());
+					self.vuir_map.insert(call_vuir_id, self.cu.values.common.void_t.into());
 					// resolve var arg now
 					let arg_inst = self
 						.analyze_comptime_block(block, arg.body)?
@@ -323,27 +281,14 @@ impl<'a> Sema<'a> {
 						},
 					}
 				},
-				// positional: too many arguments for non-variadic function
-				None => {
-					self.push_error(
-						Diagnostic::error()
-							.with_message(format!(
-								"function takes {} parameters but more were supplied",
-								func_type.params.len()
-							))
-							.with_label(Label::primary().with_span(self.diag_span(arg.span))),
-					);
-					return Err(AnalyzeError::AnalysisFailed);
-				},
 			};
 
 			// evaluate parameter type
 			let param_ty = 'param_ty: {
-				let physical_arg_idx = first_user_param + arg_idx;
-				let ty = func_type.params[physical_arg_idx];
+				let ty = func_type.params[arg_idx];
 
 				// not generic, type already known
-				if !self.cu.values.is_any_generic_poison(ty) {
+				if ty != self.cu.values.common.generic_poison_t {
 					break 'param_ty ty;
 				}
 				let Some((_, func_decl, func_vuir_info)) = &static_callee else {
@@ -391,109 +336,12 @@ impl<'a> Sema<'a> {
 			// in from_ast we use the call instruction as the coerce dst type, map it
 			self.vuir_map.insert(call_vuir_id, param_ty.into());
 
+			// analyze arg and coerce it to param_ty
 			let arg_inst = self
 				.analyze_comptime_block(block, arg.body)?
 				.unwrap_or(self.cu.values.common.unreachable_value.into());
-
 			let arg_ty = self.type_of(&arg_inst);
-
-			let arg_inst = if self.cu.values.type_contains_generic_poison(param_ty) || self.cu.values.type_contains_generic_poison(arg_ty) {
-				// param_ty or arg_ty has poison (bare or inside composite)
-				let mut substitution_map = FxHashMap::default();
-				if let Err(unify_err) = self.try_unify_extract(param_ty, arg_ty, &mut substitution_map) {
-					match unify_err {
-						UnifyError::Conflict(_param_id) => {
-							self.push_error(
-								Diagnostic::error()
-									.with_message("conflicting type inference: same generic parameter inferred as two different types")
-									.with_label(Label::primary().with_span(self.diag_span(arg.span)))
-									.with_note(format!(
-										"parameter type `{}` cannot be unified with argument type `{}`",
-										self.cu.values.display_index(param_ty),
-										self.cu.values.display_index(arg_ty),
-									)),
-							);
-						},
-						UnifyError::StructureMismatch => {
-							self.diag_expected_type(param_ty, arg_ty, self.diag_span(arg.span));
-						},
-					}
-					return Err(AnalyzeError::AnalysisFailed);
-				}
-
-				let resolved_param_ty = self.cu.values.substitute_poisons(param_ty, &substitution_map);
-
-				// propagate substitution_map to param_map and check for cross-arg conflicts
-				for (generic_param_id, concrete_ty) in &substitution_map {
-					if let Some(&(first_ty, first_arg_idx, first_span)) = generic_first_resolved.get(generic_param_id) {
-						if first_ty != *concrete_ty {
-							let first_name = param_display_name(first_arg_idx);
-							self.push_error(
-								Diagnostic::error()
-									.with_message(format!(
-										"conflicting type inference: generic parameter inferred as both `{}` and `{}`",
-										self.cu.values.display_index(first_ty),
-										self.cu.values.display_index(*concrete_ty),
-									))
-									.with_label(Label::primary().with_span(self.diag_span(arg.span)).with_message(format!(
-										"expected `{}` because argument `{}` requires the same generic parameter",
-										self.cu.values.display_index(first_ty),
-										first_name,
-									)))
-									.with_label(Label::secondary().with_span(self.diag_span(first_span)).with_message(format!(
-										"generic parameter first inferred as `{}` from argument `{}`",
-										self.cu.values.display_index(first_ty),
-										first_name,
-									))),
-							);
-							return Err(AnalyzeError::AnalysisFailed);
-						}
-					} else {
-						generic_first_resolved.insert(*generic_param_id, (*concrete_ty, arg_idx, arg.span));
-					}
-					param_map.insert(*generic_param_id, vtir::InstructionRef::Interned(*concrete_ty));
-				}
-
-				if self.cu.values.type_contains_generic_poison(resolved_param_ty) {
-					arg_inst
-				} else {
-					let coerce_block = generic_block.as_ref().map(|b| **b).unwrap_or(block);
-					self.coerce(coerce_block, resolved_param_ty, arg_inst, &arg.span)?
-				}
-			} else {
-				// no poisoned value, fully known type
-				// check if this param was originally generic (resolved via param_map from
-				// a previous arg).
-				// if so, check for cross-arg generic conflicts.
-				let original_ty = func_type.params[first_user_param + arg_idx];
-				if self.cu.values.type_contains_generic_poison(original_ty) && arg_ty != param_ty {
-					// find which generic param resolved to param_ty
-					if let Some((&_gen_id, &(first_ty, first_arg_idx, first_span))) =
-						generic_first_resolved.iter().find(|(_, (ty, _, _))| *ty == param_ty)
-					{
-						let first_name = param_display_name(first_arg_idx);
-						self.push_error(
-							Diagnostic::error()
-								.with_message(format!(
-									"conflicting type inference: generic parameter inferred as both `{}` and `{}`",
-									self.cu.values.display_index(param_ty),
-									self.cu.values.display_index(arg_ty),
-								))
-								.with_label(Label::primary().with_span(self.diag_span(arg.span)).with_message(format!(
-									"expected `{}` because argument `{}` requires the same generic parameter",
-									self.cu.values.display_index(first_ty),
-									first_name,
-								)))
-								.with_label(Label::secondary().with_span(self.diag_span(first_span)).with_message(format!(
-									"generic parameter first inferred as `{}` from argument `{}`",
-									self.cu.values.display_index(first_ty),
-									first_name,
-								))),
-						);
-						return Err(AnalyzeError::AnalysisFailed);
-					}
-				}
-
+			let arg_inst = {
 				let coerce_block = generic_block.as_ref().map(|b| **b).unwrap_or(block);
 				self.coerce(coerce_block, param_ty, arg_inst, &arg.span)?
 			};
@@ -514,7 +362,7 @@ impl<'a> Sema<'a> {
 				};
 				*comptime
 			} else {
-				func_type.comptime_params[first_user_param + arg_idx]
+				func_type.comptime_params[arg_idx]
 			};
 			if param_is_comptime || self.cu.values.type_is_comptime_only(arg_ty) {
 				if let Some((_, _, func_vuir_info)) = &static_callee {
@@ -532,10 +380,7 @@ impl<'a> Sema<'a> {
 		// after args are resolved, do the return type
 		let resolved_ret_ty = 'ret_ty: {
 			let Some((_, func_decl, func_vuir_info)) = &static_callee else {
-				if func_type.ret_ty != self.cu.values.common.generic_poison_t
-					&& func_type.ret_ty != self.cu.values.common.any_t
-					&& !self.cu.values.type_contains_generic_poison(func_type.ret_ty)
-				{
+				if func_type.ret_ty != self.cu.values.common.generic_poison_t {
 					break 'ret_ty func_type.ret_ty;
 				}
 				self.push_error(
@@ -548,9 +393,7 @@ impl<'a> Sema<'a> {
 			let generic_block = **generic_block.as_ref().expect("static callee should have a generic block");
 
 			// not generic, type already known
-			if func_type.ret_ty != self.cu.values.common.generic_poison_t && func_type.ret_ty != self.cu.values.common.any_t
-			// todo: remove any
-			{
+			if func_type.ret_ty != self.cu.values.common.generic_poison_t {
 				break 'ret_ty func_type.ret_ty;
 			}
 
@@ -569,34 +412,13 @@ impl<'a> Sema<'a> {
 			std::mem::swap(&mut self.vuir_map, &mut param_map);
 
 			let ty = ty?;
-			let mut substitution_map = FxHashMap::default();
 
-			// If the return type still contains poison, try to infer from expected_ret_ty
-			let ty = if self.cu.values.type_contains_generic_poison(ty) {
+			// if the return type still contains poison, try to infer from expected_ret_ty
+			let ty = if ty == self.cu.values.common.generic_poison_t {
 				if let Some(expected_ret_ty) = expected_ret_ty {
 					let expected_ret_ty = self.resolve_type(block, expected_ret_ty, span)?;
-					// try_unify_extract may partially succeed (some params resolved,
-					// others not). We don't treat failure here as fatal. The remaining
-					// poison check below will catch unresolved params.
-					let _ = self.try_unify_extract(ty, expected_ret_ty, &mut substitution_map);
-
-					// update param_map with new findings!
-					for (k, v) in &substitution_map {
-						param_map.insert(*k, vtir::InstructionRef::Interned(*v));
-					}
-
-					let ty = self.cu.values.substitute_poisons(ty, &substitution_map);
-					if !self.cu.values.type_contains_generic_poison(ty) {
-						if expected_ret_ty == self.cu.values.common.any_t {
-							ty
-						} else {
-							self.coerce(block, expected_ret_ty, vtir::InstructionRef::Interned(ty), span)?
-								.as_interned()
-						}
-					} else {
-						// substitution failed, we can't infer the type
-						ty
-					}
+					self.coerce(block, expected_ret_ty, vtir::InstructionRef::Interned(ty), span)?
+						.as_interned()
 				} else {
 					// no expected type.. we can't infer the type
 					ty
@@ -604,40 +426,7 @@ impl<'a> Sema<'a> {
 			} else if let Some(expected_ret_ty) = expected_ret_ty {
 				// ret ty fully resolved, just coerce to expected type
 				let expected_ret_ty = self.resolve_type(block, expected_ret_ty, span)?;
-				if ty == self.cu.values.common.any_t {
-					// any direct coerce
-					expected_ret_ty
-				} else if expected_ret_ty == self.cu.values.common.any_t {
-					// expected `any` here is a return-type inference wildcard, not a runtime value coercion
-					ty
-				} else if ty != expected_ret_ty {
-					// check if the mismatch is a generic conflict (ret ty resolved
-					// from args, but expected ret ty from call site differs)
-					if let Some((&_gen_id, &(first_ty, first_arg_idx, first_span))) =
-						generic_first_resolved.iter().find(|(_, (resolved_ty, _, _))| *resolved_ty == ty)
-					{
-						let first_name = param_display_name(first_arg_idx);
-						self.push_error(
-							Diagnostic::error()
-								.with_message(format!(
-									"conflicting type inference: generic parameter inferred as `{}` from argument but expected `{}` from \
-									 return type",
-									self.cu.values.display_index(ty),
-									self.cu.values.display_index(expected_ret_ty),
-								))
-								.with_label(
-									Label::primary()
-										.with_span(self.diag_span(*span))
-										.with_message(format!("expected `{}`", self.cu.values.display_index(expected_ret_ty),)),
-								)
-								.with_label(Label::secondary().with_span(self.diag_span(first_span)).with_message(format!(
-									"generic parameter first inferred as `{}` from argument `{}`",
-									self.cu.values.display_index(first_ty),
-									first_name,
-								))),
-						);
-						return Err(AnalyzeError::AnalysisFailed);
-					}
+				if ty != expected_ret_ty {
 					self.coerce(block, expected_ret_ty, vtir::InstructionRef::Interned(ty), span)?
 						.as_interned()
 				} else {
@@ -650,7 +439,7 @@ impl<'a> Sema<'a> {
 			};
 
 			// type still poisoned, we can't infer it
-			if self.cu.values.type_contains_generic_poison(ty) || ty == self.cu.values.common.any_t {
+			if ty == self.cu.values.common.generic_poison_t {
 				self.push_error(
 					Diagnostic::error()
 						.with_message(format!("cannot infer return type `{}`", self.cu.values.display_index(ty)))
@@ -683,50 +472,33 @@ impl<'a> Sema<'a> {
 			self.unstack_block(generic_block);
 		}
 
-		// Backfill resolved_args for comptime generics resolved via param_map
-		// (e.g. inferred from return type) but never passed as explicit args.
-		// Only backfill comptime params. Runtime params need actual values, not types.
-		if let Some((_, _, func_vuir_info)) = &static_callee {
-			for (i, arg_opt) in resolved_args.iter_mut().enumerate() {
-				if arg_opt.is_none()
-					&& func_type.comptime_params[first_user_param + i]
-					&& let Some(&mapped) = param_map.get(&func_vuir_info.params[i])
-				{
-					*arg_opt = Some((mapped, *span));
-				}
+		// ensure args are all resolved, the only reason why a arg couldn't is if inference failed
+		let mut inference_failed = false;
+		for (param_idx, arg) in resolved_args.iter().enumerate() {
+			if arg.is_some() {
+				continue;
 			}
+			self.push_error(
+				Diagnostic::error()
+					.with_message(format!("parameter `{}` cannot be inferred", param_display_name(param_idx)))
+					.with_label(Label::primary().with_span(self.diag_span(*span)))
+					.with_note("provide the argument explicitly"),
+			);
+			inference_failed = true;
 		}
-
-		// sanity checks (resolved_args covers only user-visible params; effect params are appended later)
-		debug_assert!(
-			resolved_args.len() == user_visible_param_count || func_type.var_args,
-			"args ({}) != params {}, varargs: {}, resolved_args: {resolved_args:?}, func_type.params: {:?}",
-			resolved_args.len(),
-			user_visible_param_count,
-			func_type.var_args,
-			func_type.params
-		);
+		if inference_failed {
+			return Err(AnalyzeError::AnalysisFailed);
+		}
 
 		// now, build the new function type, the function value and fire up analysis
 		let mut analysis_failed = false;
 		let (mut runtime_args, comptime_args): (Vec<vtir::InstructionRef>, Vec<Option<value::Index>>) = {
-			let mut runtime_args = Vec::with_capacity(resolved_args.len() + hidden_handler_env_param_count);
-			let mut comptime_args = Vec::with_capacity(resolved_args.len() + hidden_handler_env_param_count);
+			let mut runtime_args = Vec::with_capacity(resolved_args.len());
+			let mut comptime_args = Vec::with_capacity(resolved_args.len());
 
-			if let Some(env) = effect_handler_env {
-				runtime_args.push(env);
-				comptime_args.push(None);
-			}
-
-			for (i, (arg, arg_span)) in resolved_args
-				.iter()
-				.enumerate()
-				.filter_map(|(i, opt)| opt.as_ref().map(|(a, s)| (i, (*a, *s))))
-			{
+			for (i, (arg, arg_span)) in resolved_args.iter().enumerate().map(|(i, opt)| (i, opt.unwrap())) {
 				let name = param_display_name(i);
-				let physical_arg_idx = first_user_param + i;
-
-				if func_type.comptime_params[physical_arg_idx] {
+				if func_type.comptime_params[i] {
 					if static_callee.is_none() {
 						self.push_error(
 							Diagnostic::error()
@@ -754,6 +526,7 @@ impl<'a> Sema<'a> {
 					}
 				} else {
 					let arg_ty = self.type_of(&arg);
+
 					// ensure we aren't being passed a comptime-only type
 					if self.cu.values.type_is_comptime_only(arg_ty) {
 						self.push_error(
@@ -808,27 +581,13 @@ impl<'a> Sema<'a> {
 			.iter()
 			.enumerate()
 			.map(|(i, arg)| {
-				if let Some(arg) = arg {
-					Ok(self.type_of(&arg.0))
-				} else {
-					let name = param_display_name(i);
-					self.push_error(
-						Diagnostic::error()
-							.with_message(format!("missing argument `{}`", name))
-							.with_label(Label::primary().with_span(self.diag_span(*span)))
-							.with_note("all non-comptime parameters must be provided"),
-					);
-					Err(AnalyzeError::AnalysisFailed)
-				}
+				let arg = arg.expect("argument must be resolved at this point");
+				Ok(self.type_of(&arg.0))
 			})
 			.try_collect::<Vec<_>>()?;
-		if let Some(env) = effect_handler_env {
-			resolved_args_types.insert(0, self.type_of(&env));
-		}
 		let instantiated_fn_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Fn(value::TypeFn {
 			params: self.cu.values.alloc_slice(&resolved_args_types),
 			comptime_params: func_type.comptime_params,
-			first_positional_param: func_type.first_positional_param,
 			var_args: func_type.var_args,
 			ret_ty: resolved_ret_ty,
 			external: func_type.external,
@@ -877,10 +636,10 @@ impl<'a> Sema<'a> {
 			let old_linear_slots = std::mem::take(&mut self.linear_slots);
 
 			for (i, param_id) in func_vuir_info.params.iter().enumerate() {
-				if !func_type.comptime_params[first_user_param + i]
-					&& let Some(Some((arg_val, _))) = resolved_args.get(i)
+				if !func_type.comptime_params[i]
+					&& let Some((arg_val, _)) = resolved_args[i]
 				{
-					self.vuir_map.insert(*param_id, *arg_val);
+					self.vuir_map.insert(*param_id, arg_val);
 				}
 			}
 

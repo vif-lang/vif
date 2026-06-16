@@ -40,7 +40,7 @@ impl From<Radix> for inkwell::types::StringRadix {
 pub enum IdentKind {
 	User,
 	UserEscaped,
-	Generic,
+	UserComptime,
 	Builtin,
 }
 
@@ -57,6 +57,6 @@ impl IdentKind {
 
 	#[inline(always)]
 	pub const fn is_generic(&self) -> bool {
-		matches!(self, Self::Generic)
+		matches!(self, Self::UserComptime)
 	}
 }

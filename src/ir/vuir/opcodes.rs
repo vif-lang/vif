@@ -93,14 +93,6 @@ pub struct FnCallArg {
 	pub span: Span,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct FnCallGenericArg {
-	/// The name of the generic argument if named, None for positional
-	pub name: Intern<str>,
-	pub value: InstructionRef,
-	pub span: Span,
-}
-
 /// A value capture from another namespace
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Capture {
@@ -128,16 +120,16 @@ pub enum Opcode {
 	TypeOfCurFnRet,
 
 	/// Obtain the type of a struct field in the context of a StructInit expression
-	/// Returns a poisoned value if the field does not exist, without any diagnostic emitted. It is
-	/// expected that the diagnostic is emitted from the actual StructInit expression so we can accumulate as much diagnostic as possible.
 	StructInitTypeOfField {
 		r#struct: InstructionRef,
 		field: Intern<str>,
+		span: Span,
 	},
 	/// Type of `builtin.CallingConvention`, resolved during sema.
 	TypeBuiltinCallingConvention,
 	TypeOfPtrPointee {
 		ptr: InstructionRef,
+		span: Span,
 	},
 	TypeOf {
 		value: InstructionRef,
@@ -169,7 +161,6 @@ pub enum Opcode {
 		ret_ty: InstructionId,
 		ret_ty_is_generic: bool,
 		params: &'static [InstructionId],
-		first_positional_arg_index: Option<u16>,
 		var_args: bool,
 		body: &'static [InstructionId],
 		external: bool,
@@ -351,7 +342,6 @@ pub enum Opcode {
 
 	FnCall {
 		fun: InstructionRef,
-		generic_args: &'static [FnCallGenericArg],
 		args: &'static [FnCallArg],
 		ret_ty: Option<InstructionRef>,
 		span: Span,
@@ -361,7 +351,6 @@ pub enum Opcode {
 	FnCallWithFieldPtrReceiver {
 		field_ptr: InstructionRef,
 		field_name: ast::Ident,
-		generic_args: &'static [FnCallGenericArg],
 		args: &'static [FnCallArg],
 		ret_ty: Option<InstructionRef>,
 		span: Span,

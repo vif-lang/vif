@@ -13,7 +13,7 @@ fn sum_until(limit: i32) i32 {
 }
 
 fn main() void {
-    printf(std.slice.ptr("%d\n"), sum_until(6))
+    printf(std.slice.ptr(u8, "%d\n"), sum_until(6))
 }
 
 //@ args: run

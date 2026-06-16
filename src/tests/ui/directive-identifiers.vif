@@ -15,7 +15,7 @@ fn main() void {
 	const volatile = linear + 1
 	const addrspace = volatile + 1
 	const box = Box { .value = addrspace }
-	@forget(box)
+	@forget(Box, box)
 }
 
 //@ args: build

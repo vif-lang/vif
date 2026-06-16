@@ -7,7 +7,7 @@ fn main() void {
         if i == 3 { break i * 10 }
         i += 1
     }
-    printf(std.slice.ptr("%d\n"), result)
+    printf(std.slice.ptr(u8, "%d\n"), result)
 }
 
 //@ args: run

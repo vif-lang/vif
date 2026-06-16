@@ -17,7 +17,7 @@ const PREFIX_VALUE: i32 =
 
 fn main() void {
     const typed: i32 = 3
-    printf(std.slice.ptr("%d %d\n"), PREFIX_VALUE, typed)
+    printf(std.slice.ptr(u8, "%d %d\n"), PREFIX_VALUE, typed)
 }
 
 //@ args: run

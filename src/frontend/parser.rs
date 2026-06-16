@@ -108,11 +108,9 @@ enum Ctx {
 // =============================================================================
 
 struct CommonTypes {
-	generic_ty: &'static Type,
 	bool_ty: &'static Type,
 	void_ty: &'static Type,
 	type_ty: &'static Type,
-	any_ty: &'static Type,
 	anyptr_ty: &'static Type,
 	anyint_ty: &'static Type,
 	anyfloat_ty: &'static Type,
@@ -175,11 +173,9 @@ impl Parser {
 
 		let mut data = ModuleData::new();
 		let common_types = CommonTypes {
-			generic_ty: data.push(&Type::Generic),
 			bool_ty: data.push(&Type::Bool),
 			void_ty: data.push(&Type::Void),
 			type_ty: data.push(&Type::Type),
-			any_ty: data.push(&Type::Any),
 			anyptr_ty: data.push(&Type::Anyptr),
 			anyint_ty: data.push(&Type::Anyint),
 			anyfloat_ty: data.push(&Type::Anyfloat),
@@ -234,8 +230,6 @@ impl Parser {
 
 		if unlikely(self.peek().is_eof()) {
 			module.kind = ModuleKind::StructDecl(StructTy {
-				generics: &[],
-				params: &[],
 				fields: &[],
 				associated_items: &[],
 				packed: false,
@@ -272,27 +266,6 @@ impl Parser {
 		is_linear: bool,
 		start_span: Span,
 	) -> Result<StructTy, Diagnostic> {
-		let (generics, params) = if self.peek().kind == TokenKind::LParen {
-			let (generics, params, ..) = self.parse_fn_decl(true)?;
-
-			if generics.is_empty() && params.is_empty() {
-				self.push_error(
-					Diagnostic::error()
-						.with_message("struct generic parameters cannot be empty")
-						.with_label(
-							Label::primary()
-								.with_span(self.diag_span(Span::new(self.prev().span.start() - 1..self.prev().span.end())))
-								.with_message("empty parameters list"),
-						)
-						.with_note("remove `()` or add generic parameters and/or associated const parameters"),
-				);
-			}
-
-			(generics, params)
-		} else {
-			(self.data.push_slice(&[]), self.data.push_slice(&[]))
-		};
-
 		if !is_root {
 			match self.eat_expect(TokenTag::LBrace) {
 				Ok(_) => {},
@@ -365,8 +338,6 @@ impl Parser {
 		let end_span = self.peek().span;
 
 		Ok(StructTy {
-			generics,
-			params,
 			fields,
 			associated_items,
 			packed: is_packed,
@@ -713,7 +684,7 @@ impl Parser {
 				.with_label(Label::primary().with_span(self.diag_span(ident.span))));
 		}
 
-		let (generics, params, callconv, ret_ty, variadic) = self.parse_fn_decl(false)?;
+		let (params, callconv, ret_ty, variadic) = self.parse_fn_decl(false)?;
 		let ret_ty = ret_ty.unwrap();
 
 		let has_body = self.peek().kind == TokenTag::LBrace;
@@ -743,7 +714,6 @@ impl Parser {
 			kind: AssociatedItemKind::Fn(Fn {
 				ident,
 				comptime: is_comptime,
-				generics,
 				params,
 				callconv,
 				inline,
@@ -760,16 +730,7 @@ impl Parser {
 	fn parse_fn_decl(
 		&mut self,
 		is_type_decl: bool,
-	) -> Result<
-		(
-			&'static [Generic],
-			&'static [FnParam],
-			Option<&'static Expr>,
-			Option<&'static Expr>,
-			bool,
-		),
-		Diagnostic,
-	> {
+	) -> Result<(&'static [FnParam], Option<&'static Expr>, Option<&'static Expr>, bool), Diagnostic> {
 		match self.eat_expect(TokenTag::LParen) {
 			Ok(_) => {},
 			Err(err) => {
@@ -777,10 +738,6 @@ impl Parser {
 			},
 		}
 
-		let mut last_param = None;
-
-		let mut generics = Vec::new_in(self.linear_alloc.clone());
-		let mut generics_set: FxHashSet<Ident> = FxHashSet::default();
 		let mut params = Vec::new_in(self.linear_alloc.clone());
 
 		loop {
@@ -812,77 +769,27 @@ impl Parser {
 			let ident = self.parse_ident()?;
 
 			if unlikely(ident.is_generic()) {
-				if let Some(last_param_span) = last_param {
-					self.push_error(
-						Diagnostic::error()
-							.with_message("positional generic parameters must come before typed parameters")
-							.with_label(Label::secondary().with_span(self.diag_span(last_param_span)))
-							.with_label(Label::primary().with_span(self.diag_span(ident.span)))
-							.with_note("move this generic parameter before the typed parameters"),
-					);
-				}
-
-				if unlikely(comptime) {
-					self.push_error(
-						Diagnostic::error()
-							.with_message("positional generic parameters cannot be comptime")
-							.with_label(
-								Label::primary()
-									.with_span(self.diag_span(self.prev_nth(1).span))
-									.with_message("remove the `comptime` modifier"),
-							),
-					);
-				}
-
-				if !generics_set.insert(ident) {
-					self.push_error(
-						Diagnostic::error()
-							.with_message("duplicate positional generic parameter")
-							.with_label(Label::primary().with_span(self.diag_span(ident.span)))
-							.with_note("positional generic parameters must have unique names"),
-					);
-				} else {
-					generics.push(ident);
-				}
-			} else {
-				last_param = Some(ident.span);
-
-				if unlikely(is_type_decl && !comptime) {
-					self.push_error(
-						Diagnostic::error()
-							.with_message("type parameters must be comptime")
-							.with_label(Label::primary().with_span(self.diag_span(self.peek().span)))
-							.with_note("add the `const` modifier to the type parameter"),
-					);
-				}
-
-				self.eat_expect(TokenTag::Colon)?;
-				let ty = self.expect_ty_expr().map(|ty| self.data.push(&ty))?;
-
-				if let Some(ident) = ty.as_generic_ident() {
-					// Here we don't error on duplicate generic idents,
-					// because they might be used multiple on "concrete" types.
-					if generics_set.insert(*ident) {
-						generics.push(*ident);
-					}
-				}
-
-				let default = if unlikely(self.eat_if(TokenTag::Eq).is_some()) {
-					let default_expr = self.expect_expr()?;
-					let default_expr = self.data.push(&default_expr);
-					Some(default_expr)
-				} else {
-					None
-				};
-
-				params.push(FnParam {
-					id,
-					comptime,
-					ident,
-					ty,
-					default,
-				});
+				self.push_error(
+					Diagnostic::error()
+						.with_message("positional generic parameters are no longer supported")
+						.with_label(Label::primary().with_span(self.diag_span(ident.span)))
+						.with_note("use `comptime T: type` instead"),
+				);
 			}
+
+			if unlikely(is_type_decl && !comptime) {
+				self.push_error(
+					Diagnostic::error()
+						.with_message("type parameters must be comptime")
+						.with_label(Label::primary().with_span(self.diag_span(self.peek().span)))
+						.with_note("add the `const` modifier to the type parameter"),
+				);
+			}
+
+			self.eat_expect(TokenTag::Colon)?;
+			let ty = self.expect_ty_expr().map(|ty| self.data.push(&ty))?;
+
+			params.push(FnParam { id, comptime, ident, ty });
 
 			if self.eat_if(TokenTag::Comma).is_none() {
 				break;
@@ -920,14 +827,6 @@ impl Parser {
 		let ret_ty = if !is_type_decl {
 			let ret_ty = self.expect_ty_expr().map(|ty| self.data.push(&ty))?;
 
-			if let Some(ident) = ret_ty.as_generic_ident() {
-				// Here we don't error on duplicate either generic idents,
-				// because they might be used multiple on "concrete" types.
-				if generics_set.insert(*ident) {
-					generics.push(*ident);
-				}
-			}
-
 			Some(ret_ty)
 		} else {
 			None
@@ -936,14 +835,9 @@ impl Parser {
 		// NOTE(ldubos): We should be careful with this ID thing, and we should ensure to
 		// always set the correct `next_id` after using it.
 		let mut id = self.next_id();
-		let generics = self.data.push_slice_from(generics.iter().map(|&ident| {
-			let generic = Generic { ident, id };
-			id += 1;
-			generic
-		}));
 		self.next_id = id.as_u32();
 
-		Ok((generics, params, callconv, ret_ty, variadic))
+		Ok((params, callconv, ret_ty, variadic))
 	}
 
 	// =========================================================================
@@ -1480,10 +1374,6 @@ impl Parser {
 			TokenKind::TyNever => {
 				self.offset += 1;
 				ExprKind::Type(self.common_types.never_ty)
-			},
-			TokenKind::TyAny => {
-				self.offset += 1;
-				ExprKind::Type(self.common_types.any_ty)
 			},
 			TokenKind::TyAnyptr => {
 				self.offset += 1;
@@ -2025,6 +1915,10 @@ impl Parser {
 			TokenKind::DirInline => {
 				self.offset += 1; // consume 'inline'
 				self.parse_inline_loop(None, Ctx::Value)?
+			},
+			TokenKind::Underscore => {
+				self.offset += 1; // consume '_'
+				ExprKind::Discard
 			},
 			_ => return if allow_init { self.parse_init_expr() } else { self.parse_ty_expr() },
 		};
@@ -2634,9 +2528,6 @@ impl Parser {
 			},
 		}
 
-		let mut last_arg = None;
-		let mut last_named_arg = None;
-		let mut generics = Vec::new_in(self.linear_alloc.clone());
 		let mut args = Vec::new_in(self.linear_alloc.clone());
 
 		loop {
@@ -2646,10 +2537,10 @@ impl Parser {
 				break;
 			}
 
-			// Check for named/generic arguments by peeking ahead for `ident:` pattern.
+			// Check for named arguments by peeking ahead for `ident:` pattern.
 			// We must do this **BEFORE** calling parse_expr(), because parse_expr() would
 			// interpret `name:` as a labeled block/loop and fail.
-			let is_named_or_generic = matches!(
+			let is_user_ident = matches!(
 				(&token.kind, self.peek_nth(1).kind),
 				(
 					TokenKind::Ident {
@@ -2657,51 +2548,28 @@ impl Parser {
 						..
 					},
 					TokenKind::Colon
-				) | (
-					TokenKind::Ident {
-						kind: IdentKind::Generic,
-						..
-					},
-					TokenKind::Colon
 				)
 			);
 
-			if is_named_or_generic {
+			if is_user_ident {
 				// Parse the identifier and consume the colon
 				let ident = self.parse_ident()?;
 				self.eat_expect(TokenTag::Colon)?;
 
 				if ident.is_generic() {
-					// Generic argument
-					if let Some(last_arg) = last_arg.or(last_named_arg) {
-						self.push_error(
-							Diagnostic::error()
-								.with_message("generic arguments must come before regular arguments")
-								.with_label(Label::secondary().with_span(self.diag_span(last_arg)))
-								.with_label(Label::primary().with_span(self.diag_span(ident.span)))
-								.with_note("move this generic arg before this argument"),
-						);
-					}
-
-					let ty = self.expect_ty_expr()?;
-					generics.push(GenericArg {
-						ident,
-						value: self.data.push(&ty),
-					});
+					self.push_error(
+						Diagnostic::error()
+							.with_message("generic call arguments are no longer supported")
+							.with_label(Label::primary().with_span(self.diag_span(ident.span)))
+							.with_note("use a normal named argument, such as `T: i32`"),
+					);
+					let value = self.expect_expr()?;
+					let value = self.data.push(&value);
+					args.push(Arg::Named { name: ident, value });
 				} else {
-					if last_arg.is_some() {
-						self.push_error(
-							Diagnostic::error()
-								.with_message("named arguments cannot be mixed with positional arguments")
-								.with_label(Label::primary().with_span(self.diag_span(ident.span))),
-						);
-					}
-
 					// Named argument
 					let value = self.expect_expr()?;
 					let value = self.data.push(&value);
-
-					last_named_arg = Some(ident.span);
 
 					args.push(Arg::Named { name: ident, value });
 				}
@@ -2715,20 +2583,6 @@ impl Parser {
 					unsafe { expr.unwrap_unchecked() }
 				};
 
-				if let Some(last_named_arg_span) = last_named_arg {
-					self.push_error(
-						Diagnostic::error()
-							.with_message("positional arguments cannot come after named arguments")
-							.with_label(
-								Label::secondary()
-									.with_span(self.diag_span(last_named_arg_span))
-									.with_message("named argument here"),
-							)
-							.with_label(Label::primary().with_span(self.diag_span(expr.span))),
-					);
-				}
-
-				last_arg = Some(expr.span);
 				args.push(Arg::Positional(self.data.push(&expr)));
 			}
 
@@ -2740,11 +2594,9 @@ impl Parser {
 		self.eat_expect(TokenTag::RParen)?;
 
 		let args = self.data.push_slice(&args);
-		let generics = self.data.push_slice(&generics);
 
 		Ok(FnCall {
 			callee: self.data.push(&callee),
-			generics,
 			args,
 		})
 	}
@@ -2804,7 +2656,7 @@ impl Parser {
 					self.eat_until(TokenTag::Eq);
 					self.push_error(err);
 					let id = self.next_id();
-					let kind = ExprKind::Type(self.common_types.any_ty);
+					let kind = ExprKind::Type(self.common_types.void_ty);
 					let span = self.prev().span;
 					self.data.push(&Expr { id, kind, span })
 				},

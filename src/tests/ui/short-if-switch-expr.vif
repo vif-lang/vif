@@ -19,7 +19,7 @@ fn main() void {
         else => 3i32
     }
 
-    printf(std.slice.ptr("%d %d\n"), a, b)
+    printf(std.slice.ptr(u8, "%d %d\n"), a, b)
 }
 
 //@ args: run

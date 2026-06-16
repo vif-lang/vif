@@ -15,7 +15,7 @@ fn main() void {
     const a = classify(0)
     const b = classify(2)
     const c = classify(9)
-    printf(std.slice.ptr("%d %d %d\n"), a, b, c)
+    printf(std.slice.ptr(u8, "%d %d %d\n"), a, b, c)
 }
 
 //@ args: run

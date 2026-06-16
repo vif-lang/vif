@@ -26,8 +26,8 @@ fn main() void {
     var runtime_sub = sub_wrap(0, one)
     var runtime_mul = mul_wrap(base, base)
 
-    printf(std.slice.ptr("%u %u %u\n"), comptime_add, comptime_sub, comptime_mul)
-    printf(std.slice.ptr("%u %u %u\n"), runtime_add, runtime_sub, runtime_mul)
+    printf(std.slice.ptr(u8, "%u %u %u\n"), comptime_add, comptime_sub, comptime_mul)
+    printf(std.slice.ptr(u8, "%u %u %u\n"), runtime_add, runtime_sub, runtime_mul)
 }
 
 //@ args: run

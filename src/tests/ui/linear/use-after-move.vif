@@ -1,5 +1,5 @@
 const Handle = #linear struct { fd: i32 }
-fn consume(h: Handle) void { @forget(h) }
+fn consume(h: Handle) void { @forget(Handle, h) }
 fn main() void {
     const h: Handle = Handle { .fd = 5 }
     consume(h)

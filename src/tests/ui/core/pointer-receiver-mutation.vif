@@ -19,7 +19,7 @@ fn bump_twice(cell: *Cell) usize {
 fn main() void {
     var cell: Cell = .{ .value = 1usize }
     const result = bump_twice(&cell)
-    printf(std.slice.ptr("%u %u\n"), result, cell.value)
+    printf(std.slice.ptr(u8, "%u %u\n"), result, cell.value)
 }
 
 //@ args: run

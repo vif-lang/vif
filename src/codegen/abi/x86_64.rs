@@ -43,11 +43,10 @@ pub fn compute_type_abi_win64(
 		| value::Type::Anyfloat
 		| value::Type::Fn(_)
 		| value::Type::NullPtr
-		| value::Type::Any
 		| value::Type::Anyptr
-		| value::Type::GenericPoison
 		| value::Type::Type
 		| value::Type::Never
+		| value::Type::GenericPoison
 		| value::Type::EnumLiteral => unreachable!("cannot lower ABI of {}", cu.values.display_index(ty)),
 	}
 }
