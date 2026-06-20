@@ -119,7 +119,6 @@ impl<'a> Sema<'a> {
 		callee: AnalyzedCallee,
 		args: &[vuir::FnCallArg],
 		expected_ret_ty: &Option<vuir::InstructionRef>,
-		receiver: Option<vtir::InstructionRef>,
 		span: &Span,
 	) -> Result<vtir::InstructionRef, AnalyzeError> {
 		let fun = callee.fun;
@@ -172,32 +171,16 @@ impl<'a> Sema<'a> {
 			generic_block
 		});
 
-		// append receiver if there is one
-		if let Some(receiver) = receiver {
-			resolved_args[0] = Some((receiver, *span));
-			if let Some((_, _, func_vuir_info)) = &static_callee {
-				param_map.insert(func_vuir_info.params[0], receiver);
-			}
-		}
-
 		// check the arg count match parameter count and build input args
 		let input_args = {
 			let mut input_args = Vec::with_capacity(args.len());
 			let mut valid_params = BitVec::<u8>::repeat(false, func_type.params.len());
-			if receiver.is_some() {
-				debug_assert!(!valid_params.is_empty());
-				valid_params.set(0, true);
-			}
-
 			for (i, arg) in args.iter().enumerate() {
 				let param_idx = match arg.name {
 					Some(name) => static_callee
 						.as_ref()
 						.and_then(|(_, _, func_vuir_info)| func_vuir_info.param_idx_by_name(&name)),
-					None => {
-						let idx = if receiver.is_some() { i + 1 } else { i };
-						(idx < func_type.params.len()).then_some(idx)
-					},
+					None => (i < func_type.params.len()).then_some(i),
 				};
 
 				let param_idx = match param_idx {

@@ -2493,7 +2493,7 @@ impl<'a> Sema<'a> {
 				span,
 			} => {
 				let fun = self.resolve_inst(fun);
-				self.analyze_fn_call(id, block, AnalyzedCallee { fun }, args, expected_ret_ty, None, span)
+				self.analyze_fn_call(id, block, AnalyzedCallee { fun }, args, expected_ret_ty, span)
 					.map(|inst| (inst, ControlFlow::May))
 			},
 			vuir::Opcode::FnCallWithFieldPtrReceiver {
@@ -2605,7 +2605,7 @@ impl<'a> Sema<'a> {
 					}
 				};
 
-				self.analyze_fn_call(id, block, callee, args, expected_ret_ty, receiver, span)
+				self.analyze_fn_call(id, block, callee, args, expected_ret_ty, span)
 					.map(|inst| (inst, ControlFlow::May))
 			},
 			vuir::Opcode::Coerce { value, into, span } => {
