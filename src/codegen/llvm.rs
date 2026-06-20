@@ -2008,7 +2008,7 @@ impl<'ctx> Lowerer<'ctx> {
 					3 => inkwell::OptimizationLevel::Aggressive,
 					_ => unreachable!(),
 				},
-				inkwell::targets::RelocMode::Default,
+				inkwell::targets::RelocMode::PIC,
 				inkwell::targets::CodeModel::Default,
 			)
 			.unwrap();
