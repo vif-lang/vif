@@ -276,7 +276,8 @@ fn build(
 			} else {
 				"/ENTRY:mainCRTStartup"
 			};
-			let mut cmd = std::process::Command::new("lld-link");
+			let mut cmd = std::process::Command::new(toolchain.exe_path.join("link.exe"));
+			cmd.arg("/NOLOGO");
 			cmd.arg(format!("/OUT:{}", out_exe_path.display()));
 			cmd.arg(format!("/PDB:{}", out_exe_path.with_extension("pdb").display()));
 			cmd.args([
@@ -295,7 +296,6 @@ fn build(
 				cmd.arg(lib);
 			}
 			cmd.arg(obj_path.to_string_lossy().as_ref());
-			cmd.arg("/LTCG:FULL");
 			cmd.args(["/OPT:REF", "/OPT:ICF", "/NODEFAULTLIB"]);
 			cmd.output()
 		}

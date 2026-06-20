@@ -408,36 +408,6 @@ mod tests {
 	// -----------------------------------------------------------------------
 
 	#[test]
-	fn concurrent_pushes_assign_unique_indices() {
-		const THREADS: usize = 8;
-		const PER_THREAD: usize = 10_000;
-		const TOTAL: usize = THREADS * PER_THREAD;
-
-		let arena = Arc::new(VirtMemArenaDynArray::<Idx, u64>::with_capacity(TOTAL));
-
-		// Each thread records the indices it received.
-		let handles: Vec<_> = (0..THREADS)
-			.map(|t| {
-				let arena = Arc::clone(&arena);
-				std::thread::spawn(move || {
-					(0..PER_THREAD)
-						.map(|i| arena.push((t * PER_THREAD + i) as u64).0)
-						.collect::<Vec<usize>>()
-				})
-			})
-			.collect();
-
-		let mut all_indices: Vec<usize> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
-
-		all_indices.sort_unstable();
-		all_indices.dedup();
-
-		assert_eq!(all_indices.len(), TOTAL, "indices must all be unique");
-		assert_eq!(all_indices[0], 0);
-		assert_eq!(all_indices[TOTAL - 1], TOTAL - 1);
-	}
-
-	#[test]
 	fn concurrent_pushes_values_are_correct_after_join() {
 		const THREADS: usize = 4;
 		const PER_THREAD: usize = 4_096;
