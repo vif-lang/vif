@@ -658,7 +658,6 @@ impl<'a> Sema<'a> {
 					inlined: true,
 					base_type_name,
 					decl_fn_params: Default::default(),
-					handler_stack: vec![],
 					capture_context: self.blocks[block].capture_context.clone(),
 				})
 			};

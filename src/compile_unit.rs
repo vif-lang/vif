@@ -186,14 +186,6 @@ pub enum SemaJobState {
 	Done,
 }
 
-/// A deferred effect check for a call where the callee's effects weren't available at analysis time.
-pub struct DeferredEffectCheck {
-	pub callee_fn: value::Index,
-	pub handled_effects: Vec<value::Index>,
-	pub span: Span,
-	pub module: ModuleId,
-}
-
 #[derive(Clone, Debug)]
 pub struct ResolvedTargetInfo {
 	pub triple: Triple,
@@ -365,7 +357,6 @@ pub struct CompilationUnit {
 
 	// TODO(zino): no error per module, sema errors should be independent of module
 	pub sema_errors: Mutex<FxHashMap<ModuleId, Vec<Diagnostic>>>,
-	pub deferred_effect_checks: Mutex<Vec<DeferredEffectCheck>>,
 	pub codegen_tasks: crossbeam::queue::SegQueue<(value::Index, ir::vtir::Vtir)>,
 
 	/// Store for each known type its type info, this is used by comptime for CTTI and codegen for RTTI
@@ -488,7 +479,6 @@ impl CompilationUnit {
 			decls: Default::default(),
 			sema_jobs: Default::default(),
 			sema_errors: Default::default(),
-			deferred_effect_checks: Default::default(),
 			codegen_tasks: Default::default(),
 			type_to_type_info_id: ShardedIndexMap::new(sharded_maps_shard_count, 8192, FxBuildHasher),
 			type_info_entries: VirtMemArenaDynArray::with_capacity(8192),
@@ -925,7 +915,6 @@ pub const target: Target = Target {{
 						inlined: true,
 						base_type_name: module_decl_name,
 						decl_fn_params: Default::default(),
-						handler_stack: vec![],
 						capture_context: Default::default(),
 					});
 					sema::BlockId(sema.blocks.len() - 1)
@@ -1049,7 +1038,6 @@ pub const target: Target = Target {{
 						inlined: false,
 						base_type_name: name,
 						decl_fn_params: Default::default(),
-						handler_stack: vec![],
 						capture_context: Default::default(),
 					});
 					sema::BlockId(sema.blocks.len() - 1)
@@ -1102,7 +1090,6 @@ pub const target: Target = Target {{
 						inlined: false,
 						base_type_name: fn_decl_name,
 						decl_fn_params: Default::default(),
-						handler_stack: vec![],
 						capture_context: Default::default(),
 					});
 

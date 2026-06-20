@@ -178,9 +178,6 @@ pub struct Block {
 	/// Function parameters filled for DeclFn analysis
 	pub decl_fn_params: Vec<DeclFnParam>,
 
-	/// Effect handlers in scope: (effect_type_idx, handler_value_ref)
-	pub handler_stack: Vec<(value::Index, vtir::InstructionRef)>,
-
 	pub capture_context: BlockCaptureContext,
 }
 
@@ -273,9 +270,6 @@ pub struct Sema<'a> {
 	/// Tracks linear values by their stack allocation instruction.
 	/// Key is the VTIR InstructionRef for the StackAlloc.
 	linear_slots: FxHashMap<vtir::InstructionRef, LinearSlot>,
-	/// When analyzing an effect handler body, the expected return type of the operation.
-	/// Used by EffectResume to coerce the resume value.
-	effect_handler_ret_ty: Option<value::Index>,
 }
 
 impl<'a> Sema<'a> {
@@ -312,7 +306,6 @@ impl<'a> Sema<'a> {
 				potential_comptime_allocs: FxHashMap::default(),
 			},
 			linear_slots: FxHashMap::default(),
-			effect_handler_ret_ty: None,
 		}
 	}
 
@@ -388,33 +381,6 @@ impl<'a> Sema<'a> {
 		Ok(self.cu.values.alloc_slice(&resolved))
 	}
 
-	fn effect_handler_physical_fn_ty(
-		&self,
-		source_fn_ty: value::Index,
-	) -> value::Index {
-		let source_fn_ty = self.cu.values.index_to_key(source_fn_ty).as_type_fn();
-		let env_ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
-			pointee_ty: self.cu.values.common.void_t,
-			packed: None,
-			is_const: false,
-		})));
-		let mut params = Vec::with_capacity(source_fn_ty.params.len() + 1);
-		params.push(env_ptr_ty);
-		params.extend_from_slice(source_fn_ty.params);
-		let mut comptime_params = BitVec::<u8>::with_capacity(source_fn_ty.comptime_params.len() + 1);
-		comptime_params.push(false);
-		comptime_params.extend(source_fn_ty.comptime_params.iter().by_vals());
-		self.cu.values.intern_trivial(&value::Key::Type(value::Type::Fn(TypeFn {
-			params: self.cu.values.alloc_slice(&params),
-			comptime_params: self.cu.values.alloc_bitslice(&comptime_params),
-			var_args: source_fn_ty.var_args,
-			ret_ty: source_fn_ty.ret_ty,
-			external: source_fn_ty.external,
-			callconv: source_fn_ty.callconv,
-			inline: source_fn_ty.inline,
-		})))
-	}
-
 	pub fn finish(
 		mut self,
 		main_block: BlockId,
@@ -480,7 +446,6 @@ impl<'a> Sema<'a> {
 			inlined: self.blocks[parent].inlined,
 			base_type_name: self.blocks[parent].base_type_name,
 			decl_fn_params: vec![],
-			handler_stack: vec![],
 			capture_context,
 		});
 		ScopedBlock(BlockId(self.blocks.len() - 1))
@@ -503,7 +468,6 @@ impl<'a> Sema<'a> {
 			inlined: self.blocks[parent].inlined,
 			base_type_name: self.blocks[parent].base_type_name,
 			decl_fn_params: Default::default(),
-			handler_stack: vec![],
 			capture_context,
 		});
 		ScopedBlock(BlockId(self.blocks.len() - 1))
@@ -552,23 +516,6 @@ impl<'a> Sema<'a> {
 		let namespaces = self.cu.namespaces.read();
 		let mut namespace = namespace;
 		namespaces[namespace].decls.get(&name).copied()
-	}
-
-	/// Walk block stack looking for a handler for `effect_ty`. Returns the InstructionRef to the
-	/// handler (EffectHandler interned value or runtime FnParam instruction).
-	pub(super) fn find_handler_in_block_recursively(
-		&self,
-		block: BlockId,
-		effect_ty: value::Index,
-	) -> Option<vtir::InstructionRef> {
-		let mut cur = Some(block);
-		while let Some(b) = cur {
-			if let Some((_, ref_)) = self.blocks[b].handler_stack.iter().rev().find(|(ety, _)| *ety == effect_ty) {
-				return Some(*ref_);
-			}
-			cur = self.blocks[b].parent;
-		}
-		None
 	}
 
 	fn resolve_builtin_calling_convention_type(&mut self) -> Result<value::Index, AnalyzeError> {

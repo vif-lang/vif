@@ -2,7 +2,6 @@ pub const alloc = @import("alloc.vif")
 pub const containers = @import("containers.vif")
 pub const slice = @import("slice.vif")
 pub const os = @import("os.vif")
-pub const debug = @import("debug.vif")
 
 pub const Target = @import("Target.vif")
 
