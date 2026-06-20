@@ -4650,7 +4650,7 @@ impl<'a> Sema<'a> {
 					})
 				},
 
-				// 2..9: tag-only variants
+				// 2..8: tag-only variants
 				value::Type::Bool => values.intern_trivial(&value::Key::Union {
 					ty: kind_ty,
 					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 2)),
@@ -4673,24 +4673,24 @@ impl<'a> Sema<'a> {
 				}),
 				value::Type::Anyptr => values.intern_trivial(&value::Key::Union {
 					ty: kind_ty,
-					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 7)),
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 6)),
 					payload: None,
 				}),
 				value::Type::Anyint => values.intern_trivial(&value::Key::Union {
 					ty: kind_ty,
-					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 8)),
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 7)),
 					payload: None,
 				}),
 				value::Type::Anyfloat => values.intern_trivial(&value::Key::Union {
 					ty: kind_ty,
-					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 9)),
+					tag: Some(values.intern_enum_tag_from_field_idx(kind_tag_ty, 8)),
 					payload: None,
 				}),
 
-				// 10: ptr
+				// 9: ptr
 				value::Type::Ptr(ptr) => {
-					let payload_ty = kind_ty_union.fields[10].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 10);
+					let payload_ty = kind_ty_union.fields[9].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 9);
 					let payload = self.cu.values.alloc_slice(&[
 						values.intern_trivial(&value::Key::Int {
 							ty: values.common.u32_t,
@@ -4709,10 +4709,10 @@ impl<'a> Sema<'a> {
 					})
 				},
 
-				// 11: slice
+				// 10: slice
 				value::Type::Slice(slice) => {
-					let payload_ty = kind_ty_union.fields[11].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 11);
+					let payload_ty = kind_ty_union.fields[10].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 10);
 					let payload = self.cu.values.alloc_slice(&[values.intern_trivial(&value::Key::Int {
 						ty: values.common.u32_t,
 						value: Anyint::from(reference_type(self, slice.pointee_ty)).into(),
@@ -4728,10 +4728,10 @@ impl<'a> Sema<'a> {
 					})
 				},
 
-				// 12: array
+				// 11: array
 				value::Type::Array(array) => {
-					let payload_ty = kind_ty_union.fields[12].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 12);
+					let payload_ty = kind_ty_union.fields[11].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 11);
 					let payload = self.cu.values.alloc_slice(&[
 						values.intern_trivial(&value::Key::Int {
 							ty: values.common.u32_t,
@@ -4753,10 +4753,10 @@ impl<'a> Sema<'a> {
 					})
 				},
 
-				// 13: fn
+				// 12: fn
 				value::Type::Fn(function) => {
-					let payload_ty = kind_ty_union.fields[13].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 13);
+					let payload_ty = kind_ty_union.fields[12].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 12);
 					let payload = self.cu.values.alloc_slice(&[
 						values.intern_trivial(&value::Key::Int {
 							ty: values.common.u32_t,
@@ -4779,8 +4779,8 @@ impl<'a> Sema<'a> {
 					})
 				},
 				value::Type::Struct(_) => {
-					let payload_ty = kind_ty_union.fields[14].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 14);
+					let payload_ty = kind_ty_union.fields[13].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 13);
 					let value::Value::Struct(r#struct) = values.index_to_value(ty) else {
 						unreachable!("struct type without struct value")
 					};
@@ -4873,8 +4873,8 @@ impl<'a> Sema<'a> {
 					})
 				},
 				value::Type::Enum(_) => {
-					let payload_ty = kind_ty_union.fields[15].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 15);
+					let payload_ty = kind_ty_union.fields[14].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 14);
 					let value::Value::Enum(r#enum) = values.index_to_value(ty) else {
 						unreachable!("enum type without enum value")
 					};
@@ -4954,8 +4954,8 @@ impl<'a> Sema<'a> {
 					})
 				},
 				value::Type::Union(_) => {
-					let payload_ty = kind_ty_union.fields[16].ty.unwrap();
-					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 16);
+					let payload_ty = kind_ty_union.fields[15].ty.unwrap();
+					let tag = values.intern_enum_tag_from_field_idx(kind_tag_ty, 15);
 					let value::Value::Union(r#union) = values.index_to_value(ty) else {
 						unreachable!("union type without union value")
 					};
