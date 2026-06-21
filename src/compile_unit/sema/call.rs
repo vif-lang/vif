@@ -588,8 +588,10 @@ impl<'a> Sema<'a> {
 			// need to create decl for this fn
 			let owner_decl = self.cu.decls.with_mut(|decls| {
 				let base_decl = &decls[func_decl.owner_decl];
+				let full_qualified_name = format!("{}.{}", base_decl.full_qualified_name, instantiated_fn_ty.as_u32());
 				decls.push(Decl {
 					name: base_decl.name,
+					full_qualified_name: full_qualified_name.into(),
 					module: base_decl.module,
 					namespace: base_decl.namespace,
 					analysis_state: crate::compile_unit::DeclAnalysisState::TypeKnown(instantiated_fn_ty),

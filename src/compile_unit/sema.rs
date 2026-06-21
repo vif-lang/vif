@@ -1193,6 +1193,7 @@ impl<'a> Sema<'a> {
 
 				if !decls.is_empty() {
 					let mut namespace_decls = FxHashMap::default();
+					let owner_fqn = self.cu.decls.with_mut(|decls| decls[self.owner_decl].full_qualified_name.clone());
 					let mut cu_decls = self.cu.decls.lock();
 					{
 						for decl_id in decls {
@@ -1202,6 +1203,7 @@ impl<'a> Sema<'a> {
 
 							let decl_id = cu_decls.push(Decl {
 								name: decl.name,
+								full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
 								module: self.module,
 								namespace,
 								analysis_state: DeclAnalysisState::Unanalysed {
@@ -1404,8 +1406,10 @@ impl<'a> Sema<'a> {
 				if !decls.is_empty() {
 					let self_decl_id = {
 						let mut cu_decls = self.cu.decls.lock();
+						let full_qualified_name = format!("{}.Self", cu_decls[self.owner_decl].full_qualified_name);
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
+							full_qualified_name: full_qualified_name.into(),
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: struct_idx },
@@ -1454,6 +1458,7 @@ impl<'a> Sema<'a> {
 
 				if !decls.is_empty() {
 					let mut namespace_decls = FxHashMap::default();
+					let owner_fqn = self.cu.decls.with_mut(|decls| decls[self.owner_decl].full_qualified_name.clone());
 					let mut cu_decls = self.cu.decls.lock();
 					for decl_id in decls {
 						let vuir::Opcode::Declaration(decl) = self.vuir.instructions[*decl_id].clone() else {
@@ -1462,6 +1467,7 @@ impl<'a> Sema<'a> {
 
 						let decl_id = cu_decls.push(Decl {
 							name: decl.name,
+							full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Unanalysed {
@@ -1581,8 +1587,10 @@ impl<'a> Sema<'a> {
 				if !decls.is_empty() {
 					let self_decl_id = {
 						let mut cu_decls = self.cu.decls.lock();
+						let full_qualified_name = format!("{}.Self", cu_decls[self.owner_decl].full_qualified_name);
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
+							full_qualified_name: full_qualified_name.into(),
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: enum_idx },
@@ -1628,6 +1636,7 @@ impl<'a> Sema<'a> {
 
 				if !decls.is_empty() {
 					let mut namespace_decls = FxHashMap::default();
+					let owner_fqn = self.cu.decls.with_mut(|decls| decls[self.owner_decl].full_qualified_name.clone());
 					let mut cu_decls = self.cu.decls.lock();
 					{
 						for decl_id in decls {
@@ -1637,6 +1646,7 @@ impl<'a> Sema<'a> {
 
 							let decl_id = cu_decls.push(Decl {
 								name: decl.name,
+								full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
 								module: self.module,
 								namespace,
 								analysis_state: DeclAnalysisState::Unanalysed {
@@ -1754,8 +1764,10 @@ impl<'a> Sema<'a> {
 				if !decls.is_empty() {
 					let self_decl_id = {
 						let mut cu_decls = self.cu.decls.lock();
+						let full_qualified_name = format!("{}.Self", cu_decls[self.owner_decl].full_qualified_name);
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
+							full_qualified_name: full_qualified_name.into(),
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: union_idx },
@@ -4829,9 +4841,14 @@ impl<'a> Sema<'a> {
 						ty: fields_array_ty,
 						values: field_values,
 					});
-					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let (namespace, owner_fqn) = self.cu.decls.with_mut(|decls| {
+						let owner = &decls[self.owner_decl];
+						(owner.namespace, owner.full_qualified_name.clone())
+					});
+					let name = format!("__vif_const_{}", fields_array.as_u32());
 					let fields_decl = self.cu.decls.lock().push(Decl {
-						name: format!("__vif_const_{}", fields_array.as_u32()).as_str().into(),
+						name: name.as_str().into(),
+						full_qualified_name: format!("{owner_fqn}.{name}").into(),
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: fields_array },
@@ -4906,9 +4923,14 @@ impl<'a> Sema<'a> {
 						ty: variants_array_ty,
 						values: variant_values,
 					});
-					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let (namespace, owner_fqn) = self.cu.decls.with_mut(|decls| {
+						let owner = &decls[self.owner_decl];
+						(owner.namespace, owner.full_qualified_name.clone())
+					});
+					let name = format!("__vif_const_{}", variants_array.as_u32());
 					let variants_decl = self.cu.decls.lock().push(Decl {
-						name: format!("__vif_const_{}", variants_array.as_u32()).as_str().into(),
+						name: name.as_str().into(),
+						full_qualified_name: format!("{owner_fqn}.{name}").into(),
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: variants_array },
@@ -4999,9 +5021,14 @@ impl<'a> Sema<'a> {
 						ty: fields_array_ty,
 						values: field_values,
 					});
-					let namespace = self.cu.decls.with_mut(|decls| decls[self.owner_decl].namespace);
+					let (namespace, owner_fqn) = self.cu.decls.with_mut(|decls| {
+						let owner = &decls[self.owner_decl];
+						(owner.namespace, owner.full_qualified_name.clone())
+					});
+					let name = format!("__vif_const_{}", fields_array.as_u32());
 					let fields_decl = self.cu.decls.lock().push(Decl {
-						name: format!("__vif_const_{}", fields_array.as_u32()).as_str().into(),
+						name: name.as_str().into(),
+						full_qualified_name: format!("{owner_fqn}.{name}").into(),
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: fields_array },

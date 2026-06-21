@@ -1,4 +1,5 @@
 use std::{
+	borrow::Cow,
 	cell::RefCell,
 	fmt::Write,
 	fs::File,
@@ -117,9 +118,60 @@ impl From<usize> for DeclId {
 #[derive(Debug)]
 pub struct Decl {
 	pub name: Intern<str>,
+	pub full_qualified_name: Cow<'static, str>,
 	pub module: ModuleId,
 	pub namespace: NamespaceId,
 	pub analysis_state: DeclAnalysisState,
+}
+
+// TODO(zino): temporary
+fn module_full_qualified_name(
+	path: &RelativePathBuf,
+	root_path: &RelativePathBuf,
+	std_path: &RelativePathBuf,
+) -> String {
+	if path == root_path {
+		return "root".to_string();
+	}
+	if path == std_path {
+		return "std".to_string();
+	}
+
+	let path = path.as_str();
+	let std_dir = std_path.parent().unwrap().as_str();
+	let root_dir = root_path.parent().unwrap().as_str();
+	let (prefix, path) = if let Some(path) = path.strip_prefix(std_dir).and_then(|path| path.strip_prefix('/')) {
+		("std", path)
+	} else if let Some(path) = path.strip_prefix(root_dir).and_then(|path| path.strip_prefix('/')) {
+		("root", path)
+	} else {
+		("", path)
+	};
+	let path = path.strip_suffix(".vif").unwrap_or(path).replace(['/', '\\'], ".");
+	if prefix.is_empty() { path } else { format!("{prefix}.{path}") }
+}
+
+#[cfg(test)]
+mod tests {
+	use relative_path::RelativePathBuf;
+
+	use super::module_full_qualified_name;
+
+	#[test]
+	fn module_full_qualified_names_use_the_normalized_path() {
+		let root = RelativePathBuf::from("target-vifc/_main.vif");
+		let std = RelativePathBuf::from("target/debug/std/std.vif");
+		assert_eq!(module_full_qualified_name(&root, &root, &std), "root");
+		assert_eq!(module_full_qualified_name(&std, &root, &std), "std");
+		assert_eq!(
+			module_full_qualified_name(&RelativePathBuf::from("target/debug/std/os/windows.vif"), &root, &std),
+			"std.os.windows"
+		);
+		assert_ne!(
+			module_full_qualified_name(&RelativePathBuf::from("target-vifc/first/os.vif"), &root, &std),
+			module_full_qualified_name(&RelativePathBuf::from("target-vifc/second/os.vif"), &root, &std)
+		);
+	}
 }
 
 /// Namespace composed of declarations
@@ -452,8 +504,10 @@ impl CompilationUnit {
 		let module_path_to_id = {
 			let mut module_path_to_id = FxHashMap::default();
 			module_path_to_id.insert(modules[root_module].path.clone(), root_module);
+			module_path_to_id.insert(modules[builtin_prelude_module].path.clone(), builtin_prelude_module);
+			module_path_to_id.insert(modules[std_module].path.clone(), std_module);
+			module_path_to_id.insert(modules[builtin_module].path.clone(), builtin_module);
 			module_path_to_id.insert(modules[std_rt_module].path.clone(), std_rt_module);
-			// builtin_prelude_module has no path to access it
 			module_path_to_id
 		};
 
@@ -518,14 +572,7 @@ pub const target: Target = Target {{
 
 		let (modules_to_scan, root_module) = {
 			let module_path_to_id = self.module_path_to_id.lock();
-			let mut modules_to_scan = module_path_to_id.values().copied().collect::<Vec<_>>();
-			modules_to_scan.push(self.builtin_prelude_module);
-			// parse std module for @import("std")
-			// NOTE(ldubs): we probably want to parse std only if it is actually imported,
-			// both for performance and for a `no_std`-like compilation target.
-			modules_to_scan.push(self.std_module);
-			// parse builtin module for @import("builtin")
-			modules_to_scan.push(self.builtin_module);
+			let modules_to_scan = module_path_to_id.values().copied().collect::<Vec<_>>();
 			(modules_to_scan, self.root_module)
 		};
 
@@ -883,12 +930,15 @@ pub const target: Target = Target {{
 			});
 
 			// module has a decl
+			let full_qualified_name =
+				module_full_qualified_name(&module.path, &modules[self.root_module].path, &modules[self.std_module].path);
 			let (module_decl_name, module_decl_id) = self.decls.with_mut(|decls| {
 				let name = Intern::from(module.path.file_name().unwrap());
 				(
 					name,
 					decls.push(Decl {
 						name,
+						full_qualified_name: full_qualified_name.into(),
 						module: module_id,
 						namespace: module_namespace,
 						analysis_state: DeclAnalysisState::Unanalysed {
@@ -940,7 +990,7 @@ pub const target: Target = Target {{
 					module_namespace.owner_type = value;
 
 					for (k, v) in &builtin_prelude_module_ns.decls {
-						module_namespace.decls.insert(*k, *v);
+						module_namespace.decls.entry(*k).or_insert(*v);
 					}
 
 					module_namespace.decls.insert(COMMON_INTERNS.self_ty_symbol, module_decl_id);

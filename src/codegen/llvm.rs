@@ -2603,7 +2603,7 @@ impl<'ctx> Lowerer<'ctx> {
 		&mut self,
 		decl: DeclId,
 	) -> AnyValueEnum<'ctx> {
-		let (fn_ty_idx, name, module) = self.compilation_unit.decls.with_mut(|decls| {
+		let (fn_ty_idx, decl_name, decl_fqn, module) = self.compilation_unit.decls.with_mut(|decls| {
 			let decl = &decls[decl];
 			let ty = match &decl.analysis_state {
 				DeclAnalysisState::TypeKnown(ty) => *ty,
@@ -2613,18 +2613,23 @@ impl<'ctx> Lowerer<'ctx> {
 				},
 			};
 
-			(ty, decl.name, decl.module)
+			(ty, decl.name, decl.full_qualified_name.clone(), decl.module)
 		});
 
 		let fn_ty = self.compilation_unit.values.index_to_key(fn_ty_idx).as_type_fn();
-		let ty = self.lower_type(fn_ty_idx).into_function_type();
 
 		// TODO(zino): handle extern declarations more explicitly.
-		let is_main = &*name == "main";
+		let is_main = &*decl_name == "main";
 		let is_runtime_main = is_main && self.compilation_unit.is_std_rt_module(module);
+		let name = if fn_ty.external || is_runtime_main {
+			decl_name.as_ref()
+		} else {
+			decl_fqn.as_ref()
+		};
+		let ty = self.lower_type(fn_ty_idx).into_function_type();
 
 		// TODO(ldubos): generate a stable unique name for generic function instantiations.
-		let mangled_name: String = if is_main && !is_runtime_main {
+		let mangled_name: String = if is_main && !is_runtime_main && false {
 			format!("__vif_mod{}_main", usize::from(module))
 		} else {
 			name.to_string()
