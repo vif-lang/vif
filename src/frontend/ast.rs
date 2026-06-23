@@ -796,6 +796,7 @@ impl PartialEq for AssociatedItem {
 pub enum AssociatedItemKind {
 	Fn(Fn),
 	Const(VarBinding),
+	Var(VarBinding),
 }
 
 impl PartialEq for AssociatedItemKind {

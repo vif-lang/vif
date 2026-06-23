@@ -583,5 +583,6 @@ pub struct SwitchMultiCase {
 pub struct Decl {
 	pub name: Intern<str>,
 	pub value: &'static [InstructionId],
+	pub is_const: bool,
 	pub span: Span,
 }

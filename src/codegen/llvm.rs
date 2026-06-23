@@ -1400,11 +1400,6 @@ impl<'a, 'ctx> FnLowerCtx<'a, 'ctx> {
 				};
 				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
 			},
-			vtir::Opcode::SizeOf { of } => {
-				let of = self.lowerer.lower_type(of.as_interned());
-				let val = of.size_of().expect("@size_of called on non-sized type");
-				self.vtir_inst_to_llvm_value.insert(id, val.as_any_value_enum());
-			},
 			vtir::Opcode::Zeroed { ty } => {
 				let ty_idx = *ty;
 				let ty: BasicTypeEnum<'_> = self.lowerer.lower_type_basic(ty_idx);
@@ -1908,6 +1903,7 @@ pub struct Lowerer<'ctx> {
 	interned_value_to_llvm_type: FxHashMap<value::Index, AnyTypeEnum<'ctx>>,
 	interned_value_to_llvm_value: FxHashMap<value::Index, AnyValueEnum<'ctx>>,
 	interned_value_to_llvm_storage: FxHashMap<value::Index, PointerValue<'ctx>>,
+	decl_to_llvm_storage: FxHashMap<DeclId, PointerValue<'ctx>>,
 	type_info_table: GlobalValue<'ctx>,
 	attributes: LlvmAttributes,
 	intrins: LlvmIntrins,
@@ -2081,6 +2077,7 @@ impl<'ctx> Lowerer<'ctx> {
 			interned_value_to_llvm_type: Default::default(),
 			interned_value_to_llvm_value: Default::default(),
 			interned_value_to_llvm_storage: Default::default(),
+			decl_to_llvm_storage: Default::default(),
 			type_info_table,
 			attributes: LlvmAttributes::new(ctx),
 			intrins: LlvmIntrins::new(ctx),
@@ -2137,6 +2134,31 @@ impl<'ctx> Lowerer<'ctx> {
 		ptr
 	}
 
+	fn lower_decl_storage(
+		&mut self,
+		decl: DeclId,
+	) -> PointerValue<'ctx> {
+		if let Some(storage) = self.decl_to_llvm_storage.get(&decl) {
+			return *storage;
+		}
+
+		let (value, is_const, name) = self.compilation_unit.decls.with_mut(|decls| {
+			let decl = &decls[decl];
+			let DeclAnalysisState::Analysed { value } = decl.analysis_state else {
+				unreachable!("decl-backed pointer references an unanalyzed declaration")
+			};
+			(value, decl.is_const, decl.full_qualified_name.clone())
+		});
+		let initializer: BasicValueEnum = self.lower_interned_value_as_llvm_value(value).try_into().unwrap();
+		let global = self.module.add_global(initializer.get_type(), None, name.as_ref());
+		global.set_linkage(Linkage::Private);
+		global.set_constant(is_const);
+		global.set_initializer(&initializer);
+		let ptr = global.as_pointer_value();
+		self.decl_to_llvm_storage.insert(decl, ptr);
+		ptr
+	}
+
 	fn lower_interned_value_as_llvm_value(
 		&mut self,
 		val: value::Index,
@@ -2185,11 +2207,11 @@ impl<'ctx> Lowerer<'ctx> {
 				value::PtrKind::Decl(decl) => {
 					let decl_value = self.compilation_unit.decls.with_mut(|decls| {
 						let DeclAnalysisState::Analysed { value } = decls[decl].analysis_state else {
-							unreachable!("decl-backed constant pointer references an unanalyzed decl")
+							unreachable!("decl-backed pointer references an unanalyzed declaration")
 						};
 						value
 					});
-					let decl_storage = self.lower_interned_value_in_const_storage(decl_value);
+					let decl_storage = self.lower_decl_storage(decl);
 					let pointee_ty = self.compilation_unit.values.index_to_key(p.ty).as_type_ptr().pointee_ty;
 					let decl_value_ty = self.compilation_unit.values.type_of_interned(decl_value);
 					if decl_value_ty == pointee_ty {

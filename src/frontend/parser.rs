@@ -297,6 +297,7 @@ impl Parser {
 
 			let is_comptime = self.eat_if(TokenTag::KwComptime).is_some();
 			let is_const = self.eat_if(TokenTag::KwConst).is_some();
+			let is_var = !is_const && self.eat_if(TokenTag::KwVar).is_some();
 
 			if self.eat_if(TokenTag::KwFn).is_some() {
 				match self.parse_associated_function(is_pub, is_comptime, ext, inline, start_span, false) {
@@ -306,8 +307,8 @@ impl Parser {
 				continue;
 			}
 
-			if is_const {
-				match self.parse_associated_const(is_pub, start_span) {
+			if is_const || is_var {
+				match self.parse_associated_binding(is_pub, start_span, is_const) {
 					Ok(item) => associated_items.push(item),
 					Err(err) => self.push_error(err),
 				}
@@ -393,6 +394,7 @@ impl Parser {
 
 			// is this a fn ?
 			let is_const = self.eat_if(TokenTag::KwConst).is_some();
+			let is_var = !is_const && self.eat_if(TokenTag::KwVar).is_some();
 			if self.eat_if(TokenTag::KwFn).is_some() {
 				match self.parse_associated_function(is_pub, is_const, ext, inline, start_span, false) {
 					Ok(item) => associated_items.push(item),
@@ -401,8 +403,8 @@ impl Parser {
 				continue;
 			}
 
-			if is_const {
-				match self.parse_associated_const(is_pub, start_span) {
+			if is_const || is_var {
+				match self.parse_associated_binding(is_pub, start_span, is_const) {
 					Ok(item) => associated_items.push(item),
 					Err(err) => self.push_error(err),
 				}
@@ -522,6 +524,7 @@ impl Parser {
 			let (ext, inline) = self.parse_decl_modifiers();
 
 			let is_const = self.eat_if(TokenTag::KwConst).is_some();
+			let is_var = !is_const && self.eat_if(TokenTag::KwVar).is_some();
 			if self.eat_if(TokenTag::KwFn).is_some() {
 				match self.parse_associated_function(is_pub, is_const, ext, inline, start_span, false) {
 					Ok(item) => associated_items.push(item),
@@ -530,8 +533,8 @@ impl Parser {
 				continue;
 			}
 
-			if is_const {
-				match self.parse_associated_const(is_pub, start_span) {
+			if is_const || is_var {
+				match self.parse_associated_binding(is_pub, start_span, is_const) {
 					Ok(item) => associated_items.push(item),
 					Err(err) => self.push_error(err),
 				}
@@ -649,10 +652,11 @@ impl Parser {
 		))
 	}
 
-	fn parse_associated_const(
+	fn parse_associated_binding(
 		&mut self,
 		is_pub: bool,
 		start_span: Span,
+		is_const: bool,
 	) -> Result<AssociatedItem, Diagnostic> {
 		let id = self.next_id();
 		let var_binding = self.parse_var_binding()?;
@@ -660,7 +664,11 @@ impl Parser {
 		let span = (start_span, self.prev().span).into();
 		Ok(AssociatedItem {
 			id,
-			kind: AssociatedItemKind::Const(var_binding),
+			kind: if is_const {
+				AssociatedItemKind::Const(var_binding)
+			} else {
+				AssociatedItemKind::Var(var_binding)
+			},
 			is_pub,
 			span,
 		})

@@ -976,8 +976,8 @@ impl<'ast> Lowerer<'ast> {
 	fn lower_item_var_binding(
 		&mut self,
 		block_scope: ScopeId,
-		_item: &'ast ast::AssociatedItem,
 		binding: &'ast ast::VarBinding,
+		is_const: bool,
 	) -> vuir::InstructionId {
 		let decl = self.inst_id(block_scope, vuir::Opcode::Invalid);
 
@@ -997,6 +997,7 @@ impl<'ast> Lowerer<'ast> {
 		self.instructions[decl] = vuir::Opcode::Declaration(vuir::Decl {
 			name: binding.name.symbol,
 			value,
+			is_const,
 			span: binding.name.span,
 		});
 		decl
@@ -2511,6 +2512,7 @@ impl<'ast> Lowerer<'ast> {
 		self.instructions[decl] = vuir::Opcode::Declaration(vuir::Decl {
 			name: fun.ident.symbol,
 			value,
+			is_const: true,
 			span: fun.ident.span,
 		});
 
@@ -2854,7 +2856,8 @@ impl<'ast> Lowerer<'ast> {
 	) -> vuir::InstructionId {
 		match &item.kind {
 			ast::AssociatedItemKind::Fn(fun) => self.lower_associated_fn(block_scope, fun),
-			ast::AssociatedItemKind::Const(binding) => self.lower_item_var_binding(block_scope, item, binding),
+			ast::AssociatedItemKind::Const(binding) => self.lower_item_var_binding(block_scope, binding, true),
+			ast::AssociatedItemKind::Var(binding) => self.lower_item_var_binding(block_scope, binding, false),
 		}
 	}
 
@@ -2900,6 +2903,7 @@ impl<'ast> Lowerer<'ast> {
 			let ident = match &item.kind {
 				ast::AssociatedItemKind::Fn(fun) => fun.ident,
 				ast::AssociatedItemKind::Const(c) => c.name,
+				ast::AssociatedItemKind::Var(v) => v.name,
 			};
 
 			if let Some((_, existing_span)) = scope.decl_to_ast_node.insert(ident.symbol, (item.id, ident.span)) {

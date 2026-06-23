@@ -119,6 +119,7 @@ impl From<usize> for DeclId {
 pub struct Decl {
 	pub name: Intern<str>,
 	pub full_qualified_name: Cow<'static, str>,
+	pub is_const: bool,
 	pub module: ModuleId,
 	pub namespace: NamespaceId,
 	pub analysis_state: DeclAnalysisState,
@@ -939,6 +940,7 @@ pub const target: Target = Target {{
 					decls.push(Decl {
 						name,
 						full_qualified_name: full_qualified_name.into(),
+						is_const: true,
 						module: module_id,
 						namespace: module_namespace,
 						analysis_state: DeclAnalysisState::Unanalysed {
@@ -1093,9 +1095,27 @@ pub const target: Target = Target {{
 					sema::BlockId(sema.blocks.len() - 1)
 				};
 				let decl_val = match sema.analyze_comptime_block(block, decl_inst.value) {
-					Ok(val) => val
-						.unwrap_or_else(|| ir::vtir::InstructionRef::Interned(self.values.common.generic_poison_t))
-						.as_interned(),
+					Ok(val) => {
+						let value = val.unwrap_or_else(|| ir::vtir::InstructionRef::Interned(self.values.common.generic_poison_t));
+						let Some(value) = value.as_interned_opt() else {
+							self.sema_errors.with_mut(|errors| {
+								errors.entry(module_id).or_default().push(
+									Diagnostic::error()
+										.with_message("global initializer must be comptime-known")
+										.with_label(
+											Label::primary()
+												.with_span(DiagSpan {
+													module: module_id,
+													span: decl_inst.span,
+												})
+												.with_message(format!("`{name}` is initialized here")),
+										),
+								);
+							});
+							return Err(sema::AnalyzeError::AnalysisFailed);
+						};
+						value
+					},
 					Err(err) => {
 						self.decls.with_mut(|decls| {
 							decls[decl_id].analysis_state = DeclAnalysisState::Failed(err);

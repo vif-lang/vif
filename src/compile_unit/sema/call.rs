@@ -592,6 +592,7 @@ impl<'a> Sema<'a> {
 				decls.push(Decl {
 					name: base_decl.name,
 					full_qualified_name: full_qualified_name.into(),
+					is_const: true,
 					module: base_decl.module,
 					namespace: base_decl.namespace,
 					analysis_state: crate::compile_unit::DeclAnalysisState::TypeKnown(instantiated_fn_ty),

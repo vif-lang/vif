@@ -697,10 +697,12 @@ impl<'a> Sema<'a> {
 			},
 			vuir::BuiltinKind::SizeOf => {
 				let value_ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
-				let result = self.inst(block, vtir::Opcode::SizeOf {
-					of: InstructionRef::Interned(value_ty),
+				let type_layout = self.cu.values.type_layout(&self.cu.resolved_target, value_ty);
+				let size = self.cu.values.intern_trivial(&value::Key::Int {
+					ty: self.cu.values.common.usize_t,
+					value: Anyint::from(type_layout.size).into(),
 				});
-				Ok(result)
+				Ok(size.into())
 			},
 			vuir::BuiltinKind::BitSizeOf => {
 				let value_ty = self.resolve_type(block, &func_vuir_info.params[0].as_ref(), &caller_span.span)?;
@@ -714,20 +716,23 @@ impl<'a> Sema<'a> {
 					vtir::InstructionRef::Interned(val)
 				} else {
 					// Fallback to @size_of(T) * 8
-					let size_of = self.inst(block, vtir::Opcode::SizeOf {
-						of: InstructionRef::Interned(value_ty),
-					});
-					let eight = InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Int {
+					let layout = self.cu.values.type_layout(&self.cu.resolved_target, value_ty);
+					vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Int {
 						ty: self.cu.values.common.usize_t,
-						value: Intern::new(Anyint::from(8u64)),
-					}));
-					self.inst(block, vtir::Opcode::Mul { lhs: size_of, rhs: eight })
+						value: Intern::new(Anyint::from(8u64 * layout.size)),
+					}))
 				};
 
 				Ok(result)
 			},
 			vuir::BuiltinKind::Zeroed => {
-				let result = self.inst(block, vtir::Opcode::Zeroed { ty: fun_ty.ret_ty });
+				let result = if self.blocks[block].comptime {
+					self.intern_zeroed_value(fun_ty.ret_ty)
+						.map(InstructionRef::Interned)
+						.unwrap_or_else(|| self.inst(block, vtir::Opcode::Zeroed { ty: fun_ty.ret_ty }))
+				} else {
+					self.inst(block, vtir::Opcode::Zeroed { ty: fun_ty.ret_ty })
+				};
 				Ok(result)
 			},
 			vuir::BuiltinKind::IntFromEnum => {
@@ -1073,7 +1078,16 @@ impl<'a> Sema<'a> {
 		}
 
 		// if we load from a comptime pointer, do not emit any load
-		let inst = if let Some(value) = self.try_resolve_comptime_value(&src) {
+		let comptime_value = self.try_resolve_comptime_value(&src).filter(|value| {
+			!matches!(
+				self.cu.values.index_to_key(*value),
+				value::Key::Ptr(Ptr {
+					kind: PtrKind::Decl(decl),
+					..
+				}) if !self.cu.decls.with_mut(|decls| decls[*decl].is_const)
+			)
+		});
+		let inst = if let Some(value) = comptime_value {
 			let value = match self.cu.values.index_to_key(value).as_ptr().kind {
 				PtrKind::Value(value) => value,
 				PtrKind::Decl(decl) => self.cu.decls.with_mut(|decls| {
@@ -1204,6 +1218,7 @@ impl<'a> Sema<'a> {
 							let decl_id = cu_decls.push(Decl {
 								name: decl.name,
 								full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
+								is_const: decl.is_const,
 								module: self.module,
 								namespace,
 								analysis_state: DeclAnalysisState::Unanalysed {
@@ -1410,6 +1425,7 @@ impl<'a> Sema<'a> {
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
 							full_qualified_name: full_qualified_name.into(),
+							is_const: true,
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: struct_idx },
@@ -1468,6 +1484,7 @@ impl<'a> Sema<'a> {
 						let decl_id = cu_decls.push(Decl {
 							name: decl.name,
 							full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
+							is_const: decl.is_const,
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Unanalysed {
@@ -1591,6 +1608,7 @@ impl<'a> Sema<'a> {
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
 							full_qualified_name: full_qualified_name.into(),
+							is_const: true,
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: enum_idx },
@@ -1647,6 +1665,7 @@ impl<'a> Sema<'a> {
 							let decl_id = cu_decls.push(Decl {
 								name: decl.name,
 								full_qualified_name: format!("{owner_fqn}.{}", decl.name).into(),
+								is_const: decl.is_const,
 								module: self.module,
 								namespace,
 								analysis_state: DeclAnalysisState::Unanalysed {
@@ -1768,6 +1787,7 @@ impl<'a> Sema<'a> {
 						cu_decls.push(Decl {
 							name: COMMON_INTERNS.self_ty_symbol,
 							full_qualified_name: full_qualified_name.into(),
+							is_const: true,
 							module: self.module,
 							namespace,
 							analysis_state: DeclAnalysisState::Analysed { value: union_idx },
@@ -2432,6 +2452,7 @@ impl<'a> Sema<'a> {
 								.with_message("cannot assign to a constant")
 								.with_label(Label::primary().with_message("assignement here").with_span(self.diag_span(*span))),
 						);
+						return Err(AnalyzeError::AnalysisFailed);
 					}
 				}
 
@@ -2440,12 +2461,16 @@ impl<'a> Sema<'a> {
 				let dst_pointee_ty = self.cu.values.index_to_key(dst_ptr_ty).as_type_ptr().pointee_ty;
 
 				// is the destination ptr a comptime alloc ?
-				let value = if dst_ref.is_interned() {
-					let ptr = self.cu.values.index_to_key(dst_ref.as_interned()).as_ptr();
-					let PtrKind::ComptimeAlloc(comptime_alloc_id) = ptr.kind else {
-						unreachable!("tried to perform a comptime store to a non-ComptimeAlloc ptr")
+				let value = if let Some(comptime_alloc_id) = dst_ref.as_interned_opt().and_then(|dst| {
+					let value::Key::Ptr(Ptr {
+						kind: PtrKind::ComptimeAlloc(comptime_alloc_id),
+						..
+					}) = self.cu.values.index_to_key(dst)
+					else {
+						return None;
 					};
-
+					Some(*comptime_alloc_id)
+				}) {
 					// ensure the src is comptime known or fail
 					if self.try_resolve_comptime_value(&src_ref).is_none() {
 						self.push_error(
@@ -3498,7 +3523,9 @@ impl<'a> Sema<'a> {
 					self.push_error(
 						Diagnostic::error()
 							.with_message(format!(
-								"cannot perform a bitwise operation between a '{lhs_ty:?}' and '{rhs_ty:?}'"
+								"cannot perform a bitwise operation between a '{}' and '{}'",
+								self.cu.values.display_index(lhs_ty),
+								self.cu.values.display_index(rhs_ty)
 							))
 							.with_label(Label::primary().with_span(self.diag_span(*span))),
 					);
@@ -3717,6 +3744,16 @@ impl<'a> Sema<'a> {
 				let res = cmp_comptime(inst, lhs, rhs);
 				vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Bool(res)))
 			},
+			(Some(value::Key::EnumTag { enum_ty: lhs_ty, val: lhs }), Some(value::Key::EnumTag { enum_ty: rhs_ty, val: rhs }))
+				if lhs_ty == rhs_ty =>
+			{
+				let res = match inst {
+					vuir::Opcode::Eq { .. } => lhs == rhs,
+					vuir::Opcode::Neq { .. } => lhs != rhs,
+					_ => unreachable!("enum tags only support equality comparisons"),
+				};
+				vtir::InstructionRef::Interned(self.cu.values.intern_trivial(&value::Key::Bool(res)))
+			},
 			// no comptime value, emit runtime insts
 			_ => match inst {
 				vuir::Opcode::Eq { .. } => self.inst(block, vtir::Opcode::Eq { lhs, rhs }),
@@ -3831,11 +3868,17 @@ impl<'a> Sema<'a> {
 					} else {
 						lhs
 					};
-					self.inst(block, vtir::Opcode::StructFieldValue {
-						struct_ty: lhs,
-						field_idx,
-						ret_ty: field_ty,
-					})
+					if let Some(lhs) = self.try_resolve_comptime_value(&lhs)
+						&& let value::Key::Aggregate { values, .. } = self.cu.values.index_to_key(lhs)
+					{
+						vtir::InstructionRef::Interned(values[field_idx])
+					} else {
+						self.inst(block, vtir::Opcode::StructFieldValue {
+							struct_ty: lhs,
+							field_idx,
+							ret_ty: field_ty,
+						})
+					}
 				} else if let Some(decl) = self
 					.cu
 					.namespaces
@@ -3950,10 +3993,11 @@ impl<'a> Sema<'a> {
 
 						// TODO(zino): Unify with other places we get decl value... where we get ptr
 						let value = self.cu.get_or_analyze_decl_value(decl)?.unwrap();
+						let is_const = self.cu.decls.with_mut(|decls| decls[decl].is_const);
 						let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 							pointee_ty: self.cu.values.type_of_interned(value),
 							packed: None,
-							is_const: true,
+							is_const,
 						})));
 						let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
 							ty: ptr_ty,
@@ -4027,11 +4071,21 @@ impl<'a> Sema<'a> {
 						is_const: lhs_ptr_ty.is_const,
 					})));
 					let struct_ptr = if lhs_is_ptr { self.analyze_load(block, lhs, span)? } else { lhs };
-					self.inst(block, vtir::Opcode::StructFieldPtr {
-						struct_ptr,
-						field_idx,
-						ret_ty: ptr_to_field_ty,
-					})
+					if let Some(struct_ptr) = self.try_resolve_comptime_value(&struct_ptr)
+						&& let value::Key::Ptr(Ptr {
+							kind: PtrKind::Value(struct_value),
+							..
+						}) = self.cu.values.index_to_key(struct_ptr)
+						&& let value::Key::Aggregate { values, .. } = self.cu.values.index_to_key(*struct_value)
+					{
+						vtir::InstructionRef::Interned(self.cu.values.intern_value_ptr(values[field_idx]))
+					} else {
+						self.inst(block, vtir::Opcode::StructFieldPtr {
+							struct_ptr,
+							field_idx,
+							ret_ty: ptr_to_field_ty,
+						})
+					}
 				} else {
 					self.diag_field_not_found(field, lhs_pointee_ty, span);
 					return Err(AnalyzeError::AnalysisFailed);
@@ -4072,10 +4126,11 @@ impl<'a> Sema<'a> {
 		let Some(value) = self.cu.get_or_analyze_decl_value(decl)? else {
 			return Err(AnalyzeError::AnalysisFailed);
 		};
+		let is_const = self.cu.decls.with_mut(|decls| decls[decl].is_const);
 		let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
 			pointee_ty: self.cu.values.type_of_interned(value),
 			packed: None,
-			is_const: true,
+			is_const,
 		})));
 		let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
 			ty: ptr_ty,
@@ -4849,6 +4904,7 @@ impl<'a> Sema<'a> {
 					let fields_decl = self.cu.decls.lock().push(Decl {
 						name: name.as_str().into(),
 						full_qualified_name: format!("{owner_fqn}.{name}").into(),
+						is_const: true,
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: fields_array },
@@ -4931,6 +4987,7 @@ impl<'a> Sema<'a> {
 					let variants_decl = self.cu.decls.lock().push(Decl {
 						name: name.as_str().into(),
 						full_qualified_name: format!("{owner_fqn}.{name}").into(),
+						is_const: true,
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: variants_array },
@@ -5029,6 +5086,7 @@ impl<'a> Sema<'a> {
 					let fields_decl = self.cu.decls.lock().push(Decl {
 						name: name.as_str().into(),
 						full_qualified_name: format!("{owner_fqn}.{name}").into(),
+						is_const: true,
 						module: self.module,
 						namespace,
 						analysis_state: DeclAnalysisState::Analysed { value: fields_array },
@@ -5552,6 +5610,70 @@ impl<'a> Sema<'a> {
 			vtir::InstructionRef::Interned(i) => Some(*i),
 			vtir::InstructionRef::Instruction(_) => None,
 		}
+	}
+
+	fn intern_zeroed_value(
+		&self,
+		ty: value::Index,
+	) -> Option<value::Index> {
+		let zero_int = |ty| {
+			self.cu.values.intern_trivial(&value::Key::Int {
+				ty,
+				value: Anyint::from(0u8).into(),
+			})
+		};
+		Some(match self.cu.values.index_to_key(ty) {
+			value::Key::Type(value::Type::Int { .. } | value::Type::Anyint | value::Type::Usize | value::Type::Isize) => zero_int(ty),
+			value::Key::Type(value::Type::F16 | value::Type::F32 | value::Type::F64 | value::Type::F128 | value::Type::Anyfloat) => {
+				self.cu.values.intern_trivial(&value::Key::Float { ty, value: Anyfloat(0.0) })
+			},
+			value::Key::Type(value::Type::Bool) => self.cu.values.intern_trivial(&value::Key::Bool(false)),
+			value::Key::Type(value::Type::Void) => self.cu.values.common.void_value,
+			value::Key::Type(value::Type::Ptr(_)) => self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
+				ty,
+				kind: PtrKind::Value(self.cu.values.common.nullptr),
+			})),
+			value::Key::Type(value::Type::Slice(slice)) => {
+				let ptr_ty = self.cu.values.intern_trivial(&value::Key::Type(value::Type::Ptr(TypePtr {
+					pointee_ty: slice.pointee_ty,
+					packed: None,
+					is_const: true,
+				})));
+				let ptr = self.cu.values.intern_trivial(&value::Key::Ptr(Ptr {
+					ty: ptr_ty,
+					kind: PtrKind::Value(self.cu.values.common.nullptr),
+				}));
+				self.cu.values.intern_trivial(&value::Key::Slice {
+					ty,
+					ptr,
+					len: zero_int(self.cu.values.common.usize_t),
+				})
+			},
+			value::Key::Type(value::Type::Array(array)) => {
+				let element = self.intern_zeroed_value(array.elem_ty)?;
+				let values = self.cu.values.alloc_slice_fill_iter((0..array.len as usize).map(|_| element));
+				self.cu.values.intern_trivial(&value::Key::Aggregate { ty, values })
+			},
+			value::Key::Type(value::Type::Struct(_)) => {
+				let r#struct = self.cu.values.index_to_value(ty).as_struct();
+				let values = r#struct
+					.fields
+					.iter()
+					.map(|field| self.intern_zeroed_value(field.ty))
+					.collect::<Option<Vec<_>>>()?;
+				let values = self.cu.values.alloc_slice(&values);
+				self.cu.values.intern_trivial(&value::Key::Aggregate { ty, values })
+			},
+			value::Key::Type(value::Type::Enum(_)) => {
+				let r#enum = self.cu.values.index_to_value(ty).as_enum();
+				self.cu.values.intern_trivial(&value::Key::EnumTag {
+					enum_ty: ty,
+					val: zero_int(r#enum.tag_ty),
+				})
+			},
+			value::Key::Type(value::Type::NullPtr) => self.cu.values.common.nullptr,
+			_ => return None,
+		})
 	}
 
 	/// Promotes a variadic argument to the appropriate C ABI type.

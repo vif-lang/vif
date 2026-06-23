@@ -236,11 +236,6 @@ pub enum Opcode {
 		src: vtir::InstructionRef,
 		dst_ty: value::Index,
 	},
-	SizeOf {
-		// TODO(ldubos): maybe store [`value::Index`] directly instead of an instruction ref, since
-		// it must always be an interned type?
-		of: vtir::InstructionRef,
-	},
 	Zeroed {
 		ty: value::Index,
 	},
@@ -402,7 +397,6 @@ pub fn type_of(
 				Opcode::UnsafeIntCast { dst_ty, .. } => *dst_ty,
 				Opcode::UnsafeFloatCast { dst_ty, .. } => *dst_ty,
 				Opcode::IntToFloat { dst_ty, .. } => *dst_ty,
-				Opcode::SizeOf { of: _ } => values.common.usize_t,
 				Opcode::Zeroed { ty } => *ty,
 				Opcode::Undefined { ty } => *ty,
 				Opcode::BitCast { dst_ty, .. } => *dst_ty,
