@@ -9,8 +9,8 @@ fn main() void {
 //@ args: build
 //@ stderr:
 // error: expected type `i32`, found `bool`
-//   --> src/tests/ui/if-comptime-err.vif:5:13
+//   --> src/tests/ui/if-comptime-err.vif:5:22
 //   |
 // 5 |         var a: i32 = false
-//   |             ^^^^^^^^^^^^^^
+//   |                      ^^^^^
 //

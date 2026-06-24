@@ -11,8 +11,8 @@ fn main() void {
 //@ args: build
 //@ stderr:
 // error: expected type `i32`, found `bool`
-//   --> src/tests/ui/switch-comptime-err.vif:5:17
+//   --> src/tests/ui/switch-comptime-err.vif:5:26
 //   |
 // 5 |             var a: i32 = false
-//   |                 ^^^^^^^^^^^^^^
+//   |                          ^^^^^
 //
