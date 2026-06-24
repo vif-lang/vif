@@ -888,7 +888,7 @@ impl<'ast> Lowerer<'ast> {
 				ExprContext {
 					result_location: ExprResultLocation::StoreToPtr {
 						ptr: var.as_ref(),
-						span: binding.name.span,
+						span: binding.val.span,
 					},
 					context: ExprContextKind::None,
 				},
@@ -930,7 +930,7 @@ impl<'ast> Lowerer<'ast> {
 				ExprContext {
 					result_location: ExprResultLocation::StoreToInferredPtr {
 						ptr: var.as_ref(),
-						span: binding.name.span,
+						span: binding.val.span,
 					},
 					context: ExprContextKind::None,
 				},
@@ -942,7 +942,7 @@ impl<'ast> Lowerer<'ast> {
 		if is_comptime {
 			let name = binding.name.symbol;
 			let _ = self.wrap_in_comptime_block(block_scope, |this, block| {
-				this.lower_expr_named(block_scope, binding.val, ctx, NamingKind::Named(name))
+				this.lower_expr_named(block, binding.val, ctx, NamingKind::Named(name))
 			});
 		} else {
 			let _ = self.lower_expr_named(block_scope, binding.val, ctx, NamingKind::FromPreviousStackAlloc);
